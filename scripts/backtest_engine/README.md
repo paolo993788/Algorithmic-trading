@@ -66,6 +66,7 @@ Downloads are cached in `data/raw/fred/` and `data/raw/ecb/`, which Git ignores;
 | `outputs/wti_brent_pairs/*.png` | Prices, rolling cointegration, hedge ratio, grid search, overfitting and robust-variant figures. |
 | `outputs/time_series_momentum/*.png`, `variant_returns.csv` | Universe, baseline performance, robustness heat map, overfitting and ensemble figures; daily returns of the variants. |
 | `outputs/investment_committee/*.png`, `memo.md` | Fund performance figures and the committee memo generated from the results. |
+| `docs/figures/*-light.png`, `*-dark.png` | README charts drawn by `python -m backtest_engine.readme_figures` (official data; `--synthetic` offline); the only generated files committed. |
 
 ## Method
 
@@ -93,7 +94,7 @@ Downloads are cached in `data/raw/fred/` and `data/raw/ecb/`, which Git ignores;
 
 ## Verification
 
-Run `python -m pytest tests/backtest_engine` from the repository root (55 tests, a few seconds). Main checks:
+Run `python -m pytest tests/backtest_engine` from the repository root (56 tests, about 10 seconds). Main checks:
 
 | Check | Tolerance and justification |
 | --- | --- |

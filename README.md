@@ -23,7 +23,8 @@ Results on official data (ECB euro reference rates, EIA spot prices, Federal Res
 | Statistical arbitrage | WTI-Brent pairs on EIA spot prices (not tradable futures; see Roadmap) with a Kalman hedge ratio, grid search, walk-forward re-estimation and an adaptive z-score | The in-sample winner earns a Sharpe ratio of 0.18 out of sample, and -0.12 without April-May 2020; frozen hyperparameters leave the signal miscalibrated (standard deviation of z 2.4 instead of 1); walk-forward re-estimation with an adaptive z raises the out-of-sample Sharpe ratio to 0.42 (0.30 without the 2020 episode) |
 | Trend following | Time-series momentum on currencies and energy spot prices (futures returns would add roll yield; see Roadmap), 104-configuration robustness grid, horizon ensemble, portfolio volatility target | The 12-month rule earns a Sharpe ratio of 0.30 in 2013-2025, while the in-sample grid winner falls from 0.35 to 0.16 (PBO 0.33, deflated Sharpe ratio 0.18); the portfolio volatility target cuts the 10%-90% range of the ensemble's six-month volatility from 15 to 7 points, but overnight jumps (Henry Hub, January 2024) pass through |
 | Futures layer (library) | Exchange calendars and NYMEX expiry rules, roll schedules decided from the calendar only, unadjusted, difference- and ratio-adjusted series, tradable excess returns robust to negative prices, roll yield, carry, integer-contract P&L; validated against the Schwartz-Smith two-factor model | Exact identities between adjusted series and tradable returns; a rolled position built with the real WTI calendar earns the model's closed-form risk premium within 4 standard errors; applied to real contracts once contract data are available (EIA API) |
-| Engineering | pybind11 extension, parallel grids and CSCV, thread-independent bootstrap, Python reference implementations | 84 tests run with pytest, including explicit no-look-ahead checks for every signal, risk control and roll schedule |
+| Strategy validation | White's Reality Check, Hansen's SPA test and the Romano-Wolf stepdown on a joint stationary bootstrap (C++), effective number of trials for the deflated Sharpe ratio, Andrews break test, dependence on single episodes; applied to all 228 configurations of the three grids | No configuration survives: SPA p-values 0.20-0.63 and no Romano-Wolf discovery in any grid, in or out of sample; no momentum configuration beats the 12-month rule fixed in advance; each grid is worth only 5-9 independent trials; the baselines' Sharpe ratios vanish once 5-20 of their best days (5-10 months for carry) are removed |
+| Engineering | pybind11 extension, parallel grids, CSCV and joint bootstraps with thread-independent random streams, Python reference implementations | 97 tests run with pytest, including explicit no-look-ahead checks for every signal, risk control and roll schedule, and size and power checks of every statistical test by simulation |
 
 These are honest negative-to-modest results: spot prices ignore carry and roll yield, the momentum universe is small and energy-heavy, and a Sharpe ratio of 0.5 needs about 15 years of data to be statistically significant. The value of the repository is the process that reaches those conclusions.
 
@@ -60,13 +61,14 @@ The charts are drawn by `python -m backtest_engine.readme_figures` with the same
 
 | Item | Question | Data |
 | --- | --- | --- |
-| [`scripts/backtest_engine`](scripts/backtest_engine/README.md) (library) | Reusable C++/Python engines: Kalman filter, pairs and momentum backtests, parallel grids, CSCV/PBO, stationary bootstrap, walk-forward estimation, portfolio risk controls, VaR/ES and stress tests, futures contracts (calendars, rolls, tradable returns, carry) | FRED (EIA, Federal Reserve), ECB and EIA API loaders |
-| [Learning notes](docs/learning/README.md) | Teaching companion: intuition, derivations, code mapping, interview questions and exercises for each module, starting with [futures, rolls and carry](docs/learning/futures/futures_rolls_and_carry.md) | |
+| [`scripts/backtest_engine`](scripts/backtest_engine/README.md) (library) | Reusable C++/Python engines: Kalman filter, pairs and momentum backtests, parallel grids, CSCV/PBO, stationary bootstrap, walk-forward estimation, portfolio risk controls, VaR/ES and stress tests, futures contracts (calendars, rolls, tradable returns, carry), data-snooping tests (Reality Check, SPA, Romano-Wolf), break tests and purged cross-validation | FRED (EIA, Federal Reserve), ECB and EIA API loaders |
+| [Learning notes](docs/learning/README.md) | Teaching companion: intuition, derivations, code mapping, interview questions and exercises for each module: [futures, rolls and carry](docs/learning/futures/futures_rolls_and_carry.md); [data snooping and multiple testing](docs/learning/statistics/data_snooping_and_multiple_testing.md) | |
 | [Investment committee review of a two-sleeve fund](notebooks/case_studies/multi_strategy_investment_committee.ipynb) | Should the committee launch a fund combining trend and relative value, at what size and under which limits? | ECB reference rates, EIA spot prices |
 | [Currency style premia](notebooks/case_studies/fx_style_premia.ipynb) | Should a euro-based fund run a G10 carry, momentum and value overlay, and can risk management tame carry crashes? | ECB reference rates, OECD 3-month rates (FRED), VIX |
 | [WTI-Brent statistical arbitrage](notebooks/statistical_arbitrage/wti_brent_kalman_pairs.ipynb) | Is the WTI-Brent spread a tradable mean-reversion opportunity after costs, and how much of the backtest survives out of sample? | EIA spot prices (FRED `DCOILWTICO`, `DCOILBRENTEU`) |
 | [Multi-asset time-series momentum](notebooks/trend_following/multi_asset_time_series_momentum.ipynb) | Does trend following work on this universe, how sensitive is it to its parameters, and does an ensemble with a volatility target help? | ECB reference rates, EIA energy prices, Federal Reserve 10-year yield |
 | [WTI-Brent cointegration in R](notebooks/r_crosschecks/wti_brent_cointegration_r.ipynb) (R) | Do R's cointegration tests (urca, tseries) confirm the Python Engle-Granger results, and what does the Johansen test add? | EIA spot prices (FRED) |
+| [Data snooping and multiple testing](notebooks/strategy_validation/data_snooping_and_multiple_testing.ipynb) | After accounting for every configuration tried, does any momentum, currency or pairs configuration have a positive expected return, which ones, and how much depends on single episodes? | Same sources as the three studies |
 
 Each notebook states its rules, signal timing, costs and data sources, fixes its random seeds, separates in-sample from out-of-sample periods, counts the configurations tried and ends with an interpretation guide. Figures, tables and the committee memo are written to `outputs/`.
 
@@ -82,6 +84,7 @@ notebooks/  ──►  backtest_engine (Python)                  ──►  back
                  metrics: PSR, deflated Sharpe ratio
                  currency factors: carry, momentum, value, UIP
                  futures: calendars, rolls, adjusted series, carry, P&L
+                 validation: Reality Check, SPA, Romano-Wolf, break test, purged CV   joint stationary bootstrap of many series
                  Schwartz-Smith model (validation laboratory)
 ```
 
@@ -106,7 +109,7 @@ The notebooks are stored with the outputs of a full run on official data (Septem
 ```text
 .
 ├── scripts/backtest_engine/   C++ engine (cpp/), Python package, build and dependency files
-├── notebooks/                 case_studies/, statistical_arbitrage/, trend_following/, r_crosschecks/ (R)
+├── notebooks/                 case_studies/, statistical_arbitrage/, trend_following/, strategy_validation/, r_crosschecks/ (R)
 ├── tests/backtest_engine/     validation suite (pytest)
 ├── docs/                      learning notes (learning/), README figures, project template, publishing workflow
 ├── data/                      download cache (ignored by Git) and small examples
@@ -115,7 +118,7 @@ The notebooks are stored with the outputs of a full run on official data (Septem
 
 ## Roadmap
 
-Rebuild the momentum and pairs studies on tradable futures returns with the new futures layer (the spot prices used so far ignore roll yield); statistical validation with Reality Check, SPA and Romano-Wolf; portfolio construction and transaction-cost models; emerging-market currencies and a real-exchange-rate value signal; execution cost models calibrated on intraday data; regime detection for the pairs sleeve; live paper-trading monitor with the committee's limits.
+Rebuild the momentum and pairs studies on tradable futures returns with the new futures layer (the spot prices used so far ignore roll yield); portfolio construction and transaction-cost models; emerging-market currencies and a real-exchange-rate value signal; execution cost models calibrated on intraday data; regime detection for the pairs sleeve; live paper-trading monitor with the committee's limits.
 
 ## Conventions
 

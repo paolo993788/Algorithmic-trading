@@ -212,4 +212,31 @@ PYBIND11_MODULE(_core, m) {
         py::arg("returns"), py::arg("mean_block") = 20.0, py::arg("n_boot") = 10000, py::arg("seed") = 12345,
         py::arg("periods_per_year") = 252.0, py::arg("n_threads") = 0,
         "Annualised Sharpe ratios of stationary-bootstrap resamples.");
+
+    m.def(
+        "stationary_bootstrap_means",
+        [](const DoubleArray& x, double mean_block, int n_boot, std::uint64_t seed, int n_threads) {
+            const auto [n_obs, n_series] = matrix_shape(x);
+            const auto v = to_vector(x);
+            std::vector<double> out;
+            {
+                py::gil_scoped_release release;
+                out = bt::stationary_bootstrap_means(v, n_obs, n_series, mean_block, n_boot, seed, n_threads);
+            }
+            return to_matrix(out, static_cast<std::size_t>(n_boot), n_series);
+        },
+        py::arg("x"), py::arg("mean_block"), py::arg("n_boot"), py::arg("seed"), py::arg("n_threads") = 0,
+        "Means of the columns of x over stationary-bootstrap resamples of its rows (n_boot x n_series).");
+
+    m.def(
+        "stationary_bootstrap_indices",
+        [](std::size_t n, double mean_block, std::uint64_t seed, std::uint64_t stream, std::size_t length) {
+            const auto idx = bt::stationary_bootstrap_indices(n, mean_block, seed, stream, length);
+            py::array_t<std::int64_t> out(static_cast<py::ssize_t>(idx.size()));
+            auto buf = out.mutable_unchecked<1>();
+            for (std::size_t i = 0; i < idx.size(); ++i) buf(static_cast<py::ssize_t>(i)) = static_cast<std::int64_t>(idx[i]);
+            return out;
+        },
+        py::arg("n"), py::arg("mean_block"), py::arg("seed"), py::arg("stream"), py::arg("length"),
+        "First `length` indices of the stationary-bootstrap stream (seed, stream).");
 }

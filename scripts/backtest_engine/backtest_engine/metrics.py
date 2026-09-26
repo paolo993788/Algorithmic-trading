@@ -79,12 +79,18 @@ def expected_max_sharpe(sharpe_variance, n_trials):
     return float(math.sqrt(sharpe_variance) * ((1.0 - EULER_GAMMA) * z1 + EULER_GAMMA * z2))
 
 
-def deflated_sharpe_ratio(returns, trial_sharpes):
-    """DSR of the selected strategy given the per-period Sharpe ratios of all trials."""
+def deflated_sharpe_ratio(returns, trial_sharpes, n_trials=None):
+    """DSR of the selected strategy given the per-period Sharpe ratios of all trials.
+
+    The benchmark is the expected maximum Sharpe ratio of `n_trials` independent trials with the dispersion of the
+    observed trial Sharpe ratios. By default every trial counts; correlated trials (neighbouring grid
+    configurations) are fewer independent draws, and `n_trials` can be set to an effective number such as
+    `validation.effective_number_of_trials`. Report both, since the effective number is an estimate.
+    """
     trial_sharpes = np.asarray(trial_sharpes, dtype=float)
-    benchmark = expected_max_sharpe(trial_sharpes.var(ddof=1), trial_sharpes.size)
-    return {"dsr": probabilistic_sharpe_ratio(returns, benchmark), "benchmark_sharpe": benchmark,
-            "n_trials": trial_sharpes.size}
+    n = trial_sharpes.size if n_trials is None else float(n_trials)
+    benchmark = expected_max_sharpe(trial_sharpes.var(ddof=1), n)
+    return {"dsr": probabilistic_sharpe_ratio(returns, benchmark), "benchmark_sharpe": benchmark, "n_trials": n}
 
 
 def bootstrap_sharpe(returns, mean_block=20.0, n_boot=10_000, seed=12345, periods_per_year=252.0, n_threads=0):

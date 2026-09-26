@@ -21,7 +21,7 @@ The notes are cumulative: later notes assume the conventions of earlier ones.
 | Step | Note | Module | Status |
 | --- | --- | --- | --- |
 | 1 | [Futures, rolls and carry: from contract prices to tradable returns](futures/futures_rolls_and_carry.md) | `backtest_engine.futures`, `backtest_engine.schwartz_smith` | available |
-| 2 | Statistical validation of strategies: Reality Check, SPA, Romano-Wolf, purged and combinatorial cross-validation | planned | planned |
+| 2 | [Data snooping and multiple testing: inference after a search](statistics/data_snooping_and_multiple_testing.md) | `backtest_engine.validation`, `backtest_engine.cross_validation`, C++ joint bootstrap | available |
 | 3 | Portfolio construction and risk: covariance estimation, risk parity, constraints, transaction costs | planned | planned |
 | 4 | Execution and market impact: TWAP/VWAP, implementation shortfall, Almgren-Chriss | planned | planned |
 

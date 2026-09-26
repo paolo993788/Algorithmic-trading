@@ -1,7 +1,9 @@
 // Statistics for backtest evaluation:
 // * combinatorially symmetric cross-validation (CSCV) and the probability of
 //   backtest overfitting (Bailey, Borwein, Lopez de Prado and Zhu, 2017);
-// * stationary bootstrap of the Sharpe ratio (Politis and Romano, 1994).
+// * stationary bootstrap (Politis and Romano, 1994) of the Sharpe ratio and of
+//   the means of many series resampled jointly (the engine behind White's
+//   Reality Check, Hansen's SPA test and the Romano-Wolf stepdown procedure).
 #pragma once
 
 #include <algorithm>
@@ -96,28 +98,88 @@ inline CscvResult cscv(const std::vector<double>& returns, std::size_t n_obs, st
     return res;
 }
 
-// Annualised Sharpe ratios of `n_boot` stationary-bootstrap resamples: blocks
-// start at uniform random positions and have geometric lengths with mean
-// `mean_block` (the series is wrapped around). Replicate b uses the random
-// stream (seed, b).
+// Index stream of the stationary bootstrap: the first index is uniform on {0, ..., n-1}; each following index
+// starts a new block at a uniform position with probability 1 / mean_block and otherwise continues the current
+// block (i + 1, wrapping around at n). Block lengths are therefore geometric with mean `mean_block`. Stream
+// `stream` of seed `seed` is the same whatever thread draws it, so results do not depend on the thread count.
+class StationaryIndices {
+public:
+    StationaryIndices(std::size_t n, double mean_block, std::uint64_t seed, std::uint64_t stream)
+        : n_(n), p_new_(1.0 / mean_block), rng_(seed, stream) {}
+
+    std::size_t next() {
+        if (first_) {
+            first_ = false;
+            idx_ = random_index();
+        } else {
+            idx_ = rng_.uniform() < p_new_ ? random_index() : (idx_ + 1) % n_;
+        }
+        return idx_;
+    }
+
+private:
+    std::size_t random_index() { return std::min(static_cast<std::size_t>(rng_.uniform() * n_), n_ - 1); }
+
+    std::size_t n_;
+    double p_new_;
+    Xoshiro256 rng_;
+    std::size_t idx_ = 0;
+    bool first_ = true;
+};
+
+inline void check_bootstrap_args(std::size_t n, double mean_block, int n_boot) {
+    if (n < 2 || !(mean_block >= 1.0) || n_boot < 1) throw std::invalid_argument("invalid bootstrap parameters");
+}
+
+// Annualised Sharpe ratios of `n_boot` stationary-bootstrap resamples (replicate b uses stream (seed, b)).
 inline std::vector<double> stationary_bootstrap_sharpe(const std::vector<double>& r, double mean_block, int n_boot,
                                                        std::uint64_t seed, double periods_per_year, int n_threads = 0) {
     const std::size_t n = r.size();
-    if (n < 2 || !(mean_block >= 1.0) || n_boot < 1) throw std::invalid_argument("invalid bootstrap parameters");
-    const double p_new = 1.0 / mean_block;
+    check_bootstrap_args(n, mean_block, n_boot);
     std::vector<double> out(static_cast<std::size_t>(n_boot));
     parallel_for(out.size(), n_threads, [&](std::size_t b) {
-        Xoshiro256 rng(seed, b);
-        auto random_index = [&]() { return std::min(static_cast<std::size_t>(rng.uniform() * n), n - 1); };
-        std::size_t idx = random_index();
+        StationaryIndices indices(n, mean_block, seed, b);
         double s = 0.0, q = 0.0;
         for (std::size_t k = 0; k < n; ++k) {
-            if (k > 0) idx = rng.uniform() < p_new ? random_index() : (idx + 1) % n;
-            s += r[idx];
-            q += r[idx] * r[idx];
+            const double v = r[indices.next()];
+            s += v;
+            q += v * v;
         }
         out[b] = sharpe_from_moments(s, q, static_cast<double>(n)) * std::sqrt(periods_per_year);
     });
+    return out;
+}
+
+// Means of `n_series` series resampled jointly: x is an (n_obs x n_series) row-major matrix and every replicate
+// draws whole rows, preserving the dependence across series. Returns an (n_boot x n_series) row-major matrix;
+// replicate b uses stream (seed, b), and the sums are accumulated in time order, so results are bitwise identical
+// for any number of threads. Cost: n_boot x n_obs x n_series additions.
+inline std::vector<double> stationary_bootstrap_means(const std::vector<double>& x, std::size_t n_obs,
+                                                      std::size_t n_series, double mean_block, int n_boot,
+                                                      std::uint64_t seed, int n_threads = 0) {
+    if (x.size() != n_obs * n_series) throw std::invalid_argument("x must have n_obs * n_series values");
+    if (n_series < 1) throw std::invalid_argument("need at least one series");
+    check_bootstrap_args(n_obs, mean_block, n_boot);
+    std::vector<double> out(static_cast<std::size_t>(n_boot) * n_series);
+    parallel_for(static_cast<std::size_t>(n_boot), n_threads, [&](std::size_t b) {
+        StationaryIndices indices(n_obs, mean_block, seed, b);
+        std::vector<double> sum(n_series, 0.0);
+        for (std::size_t k = 0; k < n_obs; ++k) {
+            const double* row = x.data() + indices.next() * n_series;
+            for (std::size_t j = 0; j < n_series; ++j) sum[j] += row[j];
+        }
+        for (std::size_t j = 0; j < n_series; ++j) out[b * n_series + j] = sum[j] / static_cast<double>(n_obs);
+    });
+    return out;
+}
+
+// The first `length` indices of stream (seed, stream), for tests and reference implementations.
+inline std::vector<std::size_t> stationary_bootstrap_indices(std::size_t n, double mean_block, std::uint64_t seed,
+                                                             std::uint64_t stream, std::size_t length) {
+    check_bootstrap_args(n, mean_block, 1);
+    StationaryIndices indices(n, mean_block, seed, stream);
+    std::vector<std::size_t> out(length);
+    for (auto& v : out) v = indices.next();
     return out;
 }
 

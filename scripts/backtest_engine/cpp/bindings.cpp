@@ -128,6 +128,32 @@ PYBIND11_MODULE(_core, m) {
         py::arg("keep_weights") = false, "Time-series momentum with volatility targeting.");
 
     m.def(
+        "tsmom_ensemble_backtest",
+        [](const DoubleArray& prices, const std::vector<int>& lookbacks, double com, double target_vol, double max_leverage,
+           double cost, int lag, double periods_per_year, double portfolio_target_vol, double portfolio_com, double max_scale,
+           bool keep_weights) {
+            const auto [n_obs, n_assets] = matrix_shape(prices);
+            const auto p = to_vector(prices);
+            bt::MomentumResult r;
+            {
+                py::gil_scoped_release release;
+                r = bt::tsmom_ensemble_backtest(p, n_obs, n_assets, lookbacks, com, target_vol, max_leverage, cost, lag,
+                                                periods_per_year, portfolio_target_vol, portfolio_com, max_scale, keep_weights);
+            }
+            py::dict d;
+            d["returns"] = to_array(r.returns);
+            d["turnover"] = to_array(r.turnover);
+            d["gross"] = to_array(r.gross);
+            if (keep_weights) d["weights"] = to_matrix(r.weights, n_obs, n_assets);
+            return d;
+        },
+        py::arg("prices"), py::arg("lookbacks"), py::arg("com") = 60.0, py::arg("target_vol") = 0.4,
+        py::arg("max_leverage") = 5.0, py::arg("cost") = 0.0, py::arg("lag") = 1, py::arg("periods_per_year") = 252.0,
+        py::arg("portfolio_target_vol") = 0.0, py::arg("portfolio_com") = 60.0, py::arg("max_scale") = 3.0,
+        py::arg("keep_weights") = false,
+        "Momentum averaged over several look-backs, with optional portfolio-level volatility targeting.");
+
+    m.def(
         "tsmom_grid",
         [](const DoubleArray& prices, const std::vector<int>& lookbacks, const DoubleArray& coms, double target_vol,
            double max_leverage, double cost, int lag, double periods_per_year, int n_threads) {

@@ -1,11 +1,14 @@
 """C++-accelerated backtesting of systematic trading strategies.
 
 The compiled extension ``backtest_engine._core`` contains the Kalman filter,
-the pairs-trading and time-series momentum backtests, parallel parameter
+the pairs-trading and time-series momentum backtests (single horizon and
+horizon ensemble with a portfolio volatility target), parallel parameter
 grids, combinatorially symmetric cross-validation and the stationary
-bootstrap. The Python modules provide reference implementations, cointegration
-tests, performance metrics (including the deflated Sharpe ratio) and loaders
-for official data from FRED and the ECB.
+bootstrap. The Python modules provide reference implementations, walk-forward
+estimation, cointegration tests, performance metrics (including the deflated
+Sharpe ratio), portfolio risk controls (volatility targeting, drawdown
+control, VaR/ES, stress tests) and loaders for official data from FRED and
+the ECB.
 """
 
 __version__ = "0.1.0"

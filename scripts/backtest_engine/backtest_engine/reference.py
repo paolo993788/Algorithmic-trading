@@ -131,3 +131,57 @@ def cscv(returns, S):
         logits.append(math.log(w / (1 - w)))
     logits = np.array(logits)
     return {"pbo": float(np.mean(logits <= 0)), "logit": logits}
+
+
+def tsmom_ensemble_backtest(prices, lookbacks, com, target_vol, max_leverage, cost, lag, periods_per_year,
+                            portfolio_target_vol=0.0, portfolio_com=60.0, max_scale=3.0):
+    P = np.asarray(prices, dtype=float)
+    n, m = P.shape
+    lam = com / (com + 1.0)
+    L_max = max(lookbacks)
+    warmup = max(L_max, math.ceil(2.0 * com))
+    want = np.zeros((n, m)); r_all = np.zeros((n, m)); var = np.zeros(m); count = np.zeros(m, dtype=int)
+    for t in range(1, n):
+        raw = np.zeros(m); active = 0
+        for i in range(m):
+            p0, p1 = P[t - 1, i], P[t, i]
+            if not (np.isfinite(p0) and np.isfinite(p1) and p0 > 0 and p1 > 0):
+                continue
+            r = p1 / p0 - 1.0
+            r_all[t, i] = r
+            var[i] = r * r if count[i] == 0 else lam * var[i] + (1 - lam) * r * r
+            count[i] += 1
+            if count[i] < warmup or t < L_max or var[i] <= 0:
+                continue
+            pasts = [P[t - L, i] for L in lookbacks]
+            if not all(np.isfinite(q) and q > 0 for q in pasts):
+                continue
+            signal = np.mean([np.sign(p1 / q - 1.0) for q in pasts])
+            raw[i] = signal * min(target_vol / math.sqrt(var[i] * periods_per_year), max_leverage)
+            active += 1
+        if active:
+            want[t] = raw / active
+
+    def lagged(w):
+        h = np.zeros_like(w)
+        h[lag:] = w[: n - lag]
+        return h
+
+    if portfolio_target_vol > 0:
+        held = lagged(want)
+        lam_p = portfolio_com / (portfolio_com + 1.0)
+        warm_p = math.ceil(2.0 * portfolio_com)
+        pvar, cnt, started = 0.0, 0, False
+        for t in range(1, n):
+            ret = float(held[t - 1] @ r_all[t])
+            if not started and np.abs(held[t - 1]).sum() > 0:
+                started = True
+            if started:
+                pvar = ret * ret if cnt == 0 else lam_p * pvar + (1 - lam_p) * ret * ret
+                cnt += 1
+            scale = min(portfolio_target_vol / math.sqrt(pvar * periods_per_year), max_scale) if cnt >= warm_p and pvar > 0 else 1.0
+            want[t] *= scale
+    held = lagged(want)
+    turnover = np.zeros(n); turnover[1:] = np.abs(np.diff(held, axis=0)).sum(axis=1)
+    returns = np.zeros(n); returns[1:] = (held[:-1] * r_all[1:]).sum(axis=1) - cost * turnover[1:]
+    return {"returns": returns, "turnover": turnover, "weights": held}

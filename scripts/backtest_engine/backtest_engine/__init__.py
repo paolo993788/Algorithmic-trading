@@ -7,8 +7,10 @@ grids, combinatorially symmetric cross-validation and the stationary
 bootstrap. The Python modules provide reference implementations, walk-forward
 estimation, cointegration tests, performance metrics (including the deflated
 Sharpe ratio), portfolio risk controls (volatility targeting, drawdown
-control, VaR/ES, stress tests) and loaders for official data from FRED and
-the ECB.
+control, VaR/ES, stress tests), currency factor strategies, a futures layer
+(exchange calendars, roll schedules, adjusted continuous series, tradable
+returns, carry, contract P&L) with the Schwartz-Smith model used to validate
+it, and loaders for official data from FRED, the ECB and the EIA.
 """
 
 __version__ = "0.1.0"

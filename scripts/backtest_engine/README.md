@@ -1,6 +1,6 @@
 # Backtest engine: C++ strategy simulation and overfitting diagnostics for Python
 
-A C++17 library exposed to Python with pybind11 for researching systematic strategies without look-ahead bias: a Kalman filter for dynamic hedge ratios, pairs-trading and time-series momentum backtests (single horizon or horizon ensemble, with an optional portfolio volatility target) with execution lag and transaction costs, parameter grids evaluated in parallel, combinatorially symmetric cross-validation (probability of backtest overfitting) and the stationary bootstrap. The Python package adds reference implementations, walk-forward estimation and an adaptive z-score, cointegration tests, performance metrics with the deflated Sharpe ratio, portfolio risk controls (volatility targeting, drawdown control, VaR/ES, Basel traffic light, stress tests), currency factor strategies (carry, momentum, value) with Newey-West statistics and UIP regressions, and loaders for official data from FRED (EIA, Federal Reserve, OECD) and the ECB.
+A C++17 library exposed to Python with pybind11 for researching systematic strategies without look-ahead bias: a Kalman filter for dynamic hedge ratios, pairs-trading and time-series momentum backtests (single horizon or horizon ensemble, with an optional portfolio volatility target) with execution lag and transaction costs, parameter grids evaluated in parallel, combinatorially symmetric cross-validation (probability of backtest overfitting) and the stationary bootstrap. The Python package adds reference implementations, walk-forward estimation and an adaptive z-score, cointegration tests, performance metrics with the deflated Sharpe ratio, portfolio risk controls (volatility targeting, drawdown control, VaR/ES, Basel traffic light, stress tests), currency factor strategies (carry, momentum, value) with Newey-West statistics and UIP regressions, a futures layer that turns contract prices into tradable returns (exchange calendars, roll schedules, adjusted continuous series, carry, P&L in contracts) validated against the Schwartz-Smith two-factor model, and loaders for official data from FRED (EIA, Federal Reserve, OECD) and the ECB.
 
 ## Requirements
 
@@ -59,8 +59,10 @@ Official data are downloaded by default. Set `BACKTEST_ENGINE_DATA_MODE=syntheti
 | ECB euro reference rates | ZIP with CSV | Units of foreign currency per euro, daily since 1999. |
 | FRED `IR3TIB01{CC}M156N` (EZ, US, JP, GB, CH, SE, NO, CA, AU, NZ) and `IRSTCI01JPM156N` | CSV | OECD Main Economic Indicators: 3-month interbank rates, percent per year, monthly averages; Japanese call-money rate used before April 2002. |
 | FRED `VIXCLS` | CSV | CBOE Volatility Index, daily close. |
+| EIA API v2, NYMEX contracts 1-4: `RCLC1`-`RCLC4` (WTI), `EER_EPD2F_PE1_Y35NY_DPG`-`PE4` (NY Harbor ULSD), `EER_EPMRR_PE1_Y35NY_DPG`-`PE4` (RBOB), `RNGC1`-`RNGC4` (Henry Hub) | JSON | Daily settlement prices of the four nearest contracts (`futures.load_eia_nearby`); needs a free API key in the environment variable `EIA_API_KEY`. The prices originate from CME Group: they are cached locally and never committed. The loader's parser is tested; the download has not yet been run from the development environment, where `api.eia.gov` was not reachable, so the series identifiers are to be confirmed on the first download. |
+| Contract CSV (optional) | CSV with columns `date`, `contract`, `settle` | Licensed contract-level settlements (for example exported from a broker); read by `futures.load_contract_csv`, never committed. |
 
-Downloads are cached in `data/raw/fred/` and `data/raw/ecb/`, which Git ignores; `BACKTEST_ENGINE_DATA_DIR` changes the cache folder. EIA and Federal Reserve data are in the public domain and ECB statistics may be reused with acknowledgement; the data are downloaded rather than committed so that their source and vintage remain explicit.
+Downloads are cached in `data/raw/fred/`, `data/raw/ecb/` and `data/raw/eia/`, which Git ignores; `BACKTEST_ENGINE_DATA_DIR` changes the cache folder. EIA and Federal Reserve data are in the public domain and ECB statistics may be reused with acknowledgement; the data are downloaded rather than committed so that their source and vintage remain explicit.
 
 ## Outputs
 
@@ -96,11 +98,26 @@ Downloads are cached in `data/raw/fred/` and `data/raw/ecb/`, which Git ignores;
 
 **Currency factors** (`backtest_engine/fx_factors.py`): month-end ECB spot rates $S$ (euros per unit of currency) and OECD 3-month rates $i$; monthly log excess return $rx_{c,t+1} = \ln(1 + i_{c,t}/1200) - \ln(1 + i_{EUR,t}/1200) + \Delta\ln S_{c,t+1}$ (covered interest parity approximates a one-month forward). Signals known at the end of month $t$: interest differential (carry), cumulative excess return over $L$ months skipping $k$ (momentum), $\ln$ of the average spot rate around 60 months earlier minus $\ln S_t$ (value proxy, nominal). Euro-neutral portfolios, long the $n$ highest and short the $n$ lowest signals with equal or demeaned-rank weights, held over month $t+1$; costs proportional to turnover, entries included. Newey-West (Bartlett) standard errors; Fama regressions of $\Delta\ln S_{t+1}$ on $(i_{EUR} - i_c)_t$ by currency and pooled with currency intercepts (standard errors clustered by month with Newey-West lags); volatility scaling by trailing volatility and variance management by the realised variance of daily spot returns in the previous month (Moreira and Muir, 2017).
 
-**Random numbers**: xoshiro256** with SplitMix64 seeding (portable across compilers). The notebooks fix `SEED` for the bootstrap.
+**Futures contracts** (`backtest_engine/futures.py`; learning note [`docs/learning/futures/futures_rolls_and_carry.md`](../../docs/learning/futures/futures_rolls_and_carry.md)):
+
+- **Calendar:** last trade dates follow the NYMEX rules (CL: 3 business days before the 25th of the prior month, counted from the preceding business day when the 25th is a holiday or weekend; HO and RB: last business day of the prior month; NG: third-last business day), with a US exchange-holiday calendar (NYSE rules, Good Friday from the Gregorian Easter).
+- **Roll schedule:** the contract held after the close of $t$ is the `nearby`-th contract whose roll date (`days_before` business days before its last trade date) is after $t$. It depends only on the calendar, so it cannot look ahead.
+- **Returns and series:** the position held since $t-1$ earns $\Delta F_t = F^{c(t-1)}_t - F^{c(t-1)}_{t-1}$ and the excess return $r_t = \Delta F_t / F^{c(t-1)}_{t-1}$ (NaN when the base price is not positive). Continuous series are unadjusted, difference-adjusted ($A_t = P_t + \sum_{s>t} g_s$) or ratio-adjusted ($R_t = P_t \prod_{s>t}\rho_s$), anchored at the end or, point in time, at the start. Their daily changes and ratios equal $\Delta F_t$ and $1 + r_t$ exactly.
+- **Roll yield and carry:** the log return splits into the log change of the unadjusted series and the roll yield $-\ln\rho_s$. Carry is the annualised log slope between two nearby contracts.
+- **P&L:** P&L of integer contract positions is marked to market daily, with a cost per contract traded (a roll trades twice).
+- **Data validation:** structural checks of a contract panel, and a pooled test that a nearby panel switches contracts on the calendar dates.
+
+**Schwartz-Smith model** (`backtest_engine/schwartz_smith.py`): $\ln S = \chi + \xi$, with an Ornstein-Uhlenbeck short-term factor and a Brownian long-term factor (Schwartz and Smith, 2000).
+
+- It gives closed-form futures prices $\ln F = e^{-\kappa\tau}\chi + \xi + A(\tau)$, the Samuelson volatility term structure, and the expected excess return $e^{-\kappa\tau}\lambda_\chi + \lambda_\xi$ (exact also over finite horizons).
+- Simulation is exact.
+- It is used only to validate the futures layer, never as evidence about real markets.
+
+**Random numbers**: xoshiro256** with SplitMix64 seeding (portable across compilers). The notebooks fix `SEED` for the bootstrap; the Schwartz-Smith simulations use NumPy's PCG64 with fixed seeds.
 
 ## Verification
 
-Run `python -m pytest tests/backtest_engine` from the repository root (65 tests, about 10 seconds). Main checks:
+Run `python -m pytest tests/backtest_engine` from the repository root (84 tests, about 12 seconds). Main checks:
 
 | Check | Tolerance and justification |
 | --- | --- |
@@ -133,6 +150,18 @@ Run `python -m pytest tests/backtest_engine` from the repository root (65 tests,
 | Realised variance of daily spot returns under the previous month's weights; variance management uses the previous month | exact |
 | Fama regression on simulated data where uncovered interest parity holds | pooled slope within 0.05 of 1 |
 | MacKinnon critical values vs statsmodels (when installed) | relative $10^{-12}$ |
+| Futures calendar: published last trade dates (WTI May 2020: 21 April; June 2020: 19 May, moved by Memorial Day), Good Friday, Juneteenth and weekend observance rules | exact |
+| Nearby contracts and roll schedules on hand-checked dates (expiring contract kept on its last trade date; roll `days_before` business days earlier) | exact |
+| Ratio-adjusted ratios equal tradable returns; difference-adjusted changes equal price changes; for both anchors; unadjusted series differs only on roll dates | $10^{-13}$ / $10^{-11}$ |
+| Start-anchored series are point in time (appending data leaves history unchanged); end-anchored ones are not | relative $10^{-12}$ |
+| No look-ahead: shocking future contract prices leaves earlier returns unchanged | exact equality |
+| Log return = price move + roll yield; roll yield negative in contango | $10^{-14}$ |
+| Without risk premia and uncertainty a rolled futures position earns exactly zero while the spot drifts | $10^{-13}$ |
+| Negative prices: P&L defined, percentage return undefined; ratio adjustment refuses; P&L refuses to mark a position without a price; roll trades counted twice | exact |
+| Daily P&L of integer contracts equals multiplier x difference-adjusted changes | $10^{-8}$ currency units |
+| Nearby panel round trip; calendar-alignment test separates the true calendar from one shifted by a day | exact; $t > 5$ and $t < -5$ |
+| Schwartz-Smith: exact transition moments; futures price = risk-neutral expectation of the spot; expected gross return and martingale property without premia; Samuelson volatility term structure | 4 Monte Carlo standard errors (Type I error about $6\times10^{-5}$); 1% for covariances and volatilities with 200,000-400,000 draws |
+| Whole pipeline (CL calendar, roll schedule, tradable returns, 200 paths of four years) earns the closed-form risk premium of the contracts actually held | within 4 standard errors, with the premium more than 8 standard errors from zero (power check) |
 
 ## References
 
@@ -144,9 +173,12 @@ Run `python -m pytest tests/backtest_engine` from the repository root (65 tests,
 - Asness, C. S., Moskowitz, T. J. and Pedersen, L. H. (2013). Value and momentum everywhere. *Journal of Finance*, 68(3), 929-985.
 - Brunnermeier, M. K., Nagel, S. and Pedersen, L. H. (2009). Carry trades and currency crashes. *NBER Macroeconomics Annual*, 23, 313-347.
 - Chan, E. (2013). *Algorithmic Trading: Winning Strategies and Their Rationale*. Wiley.
+- Erb, C. B. and Harvey, C. R. (2006). The strategic and tactical value of commodity futures. *Financial Analysts Journal*, 62(2), 69-97.
 - Engle, R. F. and Granger, C. W. J. (1987). Co-integration and error correction: representation, estimation, and testing. *Econometrica*, 55(2), 251-276.
 - Fama, E. F. (1984). Forward and spot exchange rates. *Journal of Monetary Economics*, 14(3), 319-338.
+- Gorton, G. and Rouwenhorst, K. G. (2006). Facts and fantasies about commodity futures. *Financial Analysts Journal*, 62(2), 47-68.
 - Harvey, C. R. and Liu, Y. (2015). Backtesting. *Journal of Portfolio Management*, 42(1), 13-28.
+- Koijen, R. S. J., Moskowitz, T. J., Pedersen, L. H. and Vrugt, E. B. (2018). Carry. *Journal of Financial Economics*, 127(2), 197-225.
 - Lo, A. W. (2002). The statistics of Sharpe ratios. *Financial Analysts Journal*, 58(4), 36-52.
 - Lustig, H., Roussanov, N. and Verdelhan, A. (2011). Common risk factors in currency markets. *Review of Financial Studies*, 24(11), 3731-3777.
 - MacKinnon, J. G. (2010). Critical values for cointegration tests. Queen's Economics Department Working Paper 1227.
@@ -156,5 +188,8 @@ Run `python -m pytest tests/backtest_engine` from the repository root (65 tests,
 - Moskowitz, T. J., Ooi, Y. H. and Pedersen, L. H. (2012). Time series momentum. *Journal of Financial Economics*, 104(2), 228-250.
 - Newey, W. K. and West, K. D. (1987). A simple, positive semi-definite, heteroskedasticity and autocorrelation consistent covariance matrix. *Econometrica*, 55(3), 703-708.
 - Politis, D. N. and Romano, J. P. (1994). The stationary bootstrap. *Journal of the American Statistical Association*, 89(428), 1303-1313.
+- Samuelson, P. A. (1965). Proof that properly anticipated prices fluctuate randomly. *Industrial Management Review*, 6(2), 41-49.
+- Schwartz, E. S. and Smith, J. E. (2000). Short-term variations and long-term dynamics in commodity prices. *Management Science*, 46(7), 893-911.
 - Said, S. E. and Dickey, D. A. (1984). Testing for unit roots in autoregressive-moving average models of unknown order. *Biometrika*, 71(3), 599-607.
-- Data: FRED, Federal Reserve Bank of St. Louis (https://fred.stlouisfed.org); U.S. Energy Information Administration; Board of Governors of the Federal Reserve System; OECD Main Economic Indicators; Chicago Board Options Exchange (VIX); European Central Bank.
+- CME Group. Contract specifications for NYMEX CL, HO, RB and NG (https://www.cmegroup.com).
+- Data: FRED, Federal Reserve Bank of St. Louis (https://fred.stlouisfed.org); U.S. Energy Information Administration (https://www.eia.gov/opendata/); Board of Governors of the Federal Reserve System; OECD Main Economic Indicators; Chicago Board Options Exchange (VIX); European Central Bank.

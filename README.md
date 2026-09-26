@@ -13,16 +13,16 @@ Most backtests look good because of what they leave out: the configurations that
 
 ## Highlights
 
-Results on official data (ECB euro reference rates and EIA spot prices up to December 2025), after transaction costs and with a one-day execution lag. The momentum figures were produced without the 10-year Treasury leg, whose FRED series was not reachable at the time; with it, the numbers will differ.
+Results on official data (ECB euro reference rates, EIA spot prices and Federal Reserve Treasury yields up to December 2025), after transaction costs and with a one-day execution lag. Momentum uses eight instruments: four currencies against the euro, WTI, Brent, Henry Hub and a 10-year US Treasury total-return index.
 
 | Area | What is done | Key result |
 | --- | --- | --- |
-| Investment committee (case study) | Two-sleeve fund (trend + relative value) with volatility budgets, a fund volatility cap and drawdown control; VaR/ES, Basel traffic-light VaR backtest, stress tests, deflated Sharpe ratio, go/no-go against criteria fixed in advance | Sharpe ratio 0.43 in 2013-2025 with uncorrelated sleeves (correlation 0.00), but a bootstrap interval from -0.17 to 1.01, a deflated Sharpe ratio of 0.22 after 184 research trials and a 30% drawdown: **no-go**, with the limits a pilot would need |
+| Investment committee (case study) | Two-sleeve fund (trend + relative value) with volatility budgets, a fund volatility cap and drawdown control; VaR/ES, Basel traffic-light VaR backtest, stress tests, deflated Sharpe ratio, go/no-go against criteria fixed in advance | Sharpe ratio 0.50 in 2013-2025 with uncorrelated sleeves (correlation -0.01), but a bootstrap interval from -0.09 to 1.07, a deflated Sharpe ratio of 0.31 after 184 research trials and a 29% drawdown: **no-go**, with the limits a pilot would need |
 | Statistical arbitrage | WTI-Brent pairs with a Kalman hedge ratio, grid search, walk-forward re-estimation and an adaptive z-score | The in-sample winner earns a Sharpe ratio of 0.18 out of sample, and -0.12 without April-May 2020; frozen hyperparameters leave the signal miscalibrated (standard deviation of z 2.4 instead of 1); walk-forward re-estimation with an adaptive z raises the out-of-sample Sharpe ratio to 0.42 (0.30 without the 2020 episode) |
-| Trend following | Time-series momentum on currencies and energy, 104-configuration robustness grid, horizon ensemble, portfolio volatility target | PBO 0.57 and deflated Sharpe ratio 0.09: the grid search does not produce reliable evidence; the portfolio volatility target cuts the 10%-90% range of the ensemble's six-month volatility from 16 to 7 points, but overnight jumps (Henry Hub, January 2024) pass through |
+| Trend following | Time-series momentum on currencies and energy, 104-configuration robustness grid, horizon ensemble, portfolio volatility target | The 12-month rule earns a Sharpe ratio of 0.30 in 2013-2025, while the in-sample grid winner falls from 0.35 to 0.16 (PBO 0.33, deflated Sharpe ratio 0.18); the portfolio volatility target cuts the 10%-90% range of the ensemble's six-month volatility from 15 to 7 points, but overnight jumps (Henry Hub, January 2024) pass through |
 | Engineering | pybind11 extension, parallel grids and CSCV, thread-independent bootstrap, Python reference implementations | 55 automated tests, including explicit no-look-ahead checks for every signal and risk control |
 
-These are honest negative-to-modest results: spot prices ignore carry and roll yield, the momentum universe is small and energy-heavy, and a Sharpe ratio of 0.4 needs about 20 years of data to be statistically significant. The value of the repository is the process that reaches those conclusions.
+These are honest negative-to-modest results: spot prices ignore carry and roll yield, the momentum universe is small and energy-heavy, and a Sharpe ratio of 0.5 needs about 15 years of data to be statistically significant. The value of the repository is the process that reaches those conclusions.
 
 ## Catalogue
 

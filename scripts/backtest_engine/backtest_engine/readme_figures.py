@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import data, metrics as mt, portfolio as pf, strategies as st, synthetic
+from . import data, fx_factors as fx, metrics as mt, portfolio as pf, strategies as st, synthetic
 from .figstyle import end_label, header, label_offsets, new_figure, percent_axis, point_label, render
 
 START, END = "1999-01-04", "2025-12-31"
@@ -173,20 +173,69 @@ def vol_target(t, d):
     return fig
 
 
-FIGURES = {"fund_growth": fund_growth, "momentum_overfitting": overfitting, "pairs_variants": pairs_variants,
-           "volatility_target": vol_target}
+def load_fx(official=True) -> dict:
+    """Pre-specified FX style portfolios of the currency notebook (net of 3 bp per unit of turnover)."""
+    panel = fx.load_fx_panel(fx.G10, "1999-01-01", "2025-12-31", official=official)
+    rx = fx.excess_returns(panel["spot"], panel["rates"])
+    signals = {"Carry": fx.carry_signal(panel["rates"], fx.G10), "Momentum": fx.momentum_signal(rx, 12, 1),
+               "Value (5-year reversal)": fx.value_signal(panel["spot"], 60)}
+    returns = pd.DataFrame({k: fx.portfolio_returns(fx.cross_sectional_weights(s_, 3), rx, 3.0)["net"] for k, s_ in signals.items()})
+    source = ("Source: ECB euro reference rates; OECD 3-month interbank rates (FRED)" if official
+              else "Simulated currency panel, not market data")
+    return {"fx": returns, "source": source}
+
+
+def fx_styles(t, d):
+    r = d["fx"]
+    growth = np.exp(r.fillna(0.0).cumsum())
+    fig, ax = new_figure(t)
+    fig.subplots_adjust(right=0.74)
+    names = list(r.columns)
+    for k, name in enumerate(names):
+        g = growth[name].where(r[name].notna().cummax())
+        ax.plot(g.index, g, color=t["series"][k], lw=1.9 if k == 0 else 1.4)
+    split = pd.Timestamp("2013-01-01")
+    ax.axvline(split, color=t["axis"], lw=1, ls=(0, (4, 3)))
+    ax.annotate("out of sample", (split, ax.get_ylim()[1]), xytext=(4, -4), textcoords="offset points", va="top",
+                fontsize=8, color=t["ink2"])
+    ax.axhline(1, color=t["axis"], lw=1)
+    ends = [growth[n].iloc[-1] for n in names]
+    offsets = label_offsets(ax, ends)
+    for k, (name, dy) in enumerate(zip(names, offsets)):
+        before = r[name].loc[:"2012"].dropna()
+        after = r[name].loc["2013":].dropna()
+        sr_b = np.sqrt(12) * before.mean() / before.std()
+        sr_a = np.sqrt(12) * after.mean() / after.std()
+        end_label(ax, t, growth.index[-1], ends[k], f"{name}: Sharpe {sr_b:.2f} / {sr_a:.2f}", t["series"][k], dy=dy)
+    from matplotlib.ticker import MultipleLocator
+    ax.yaxis.set_major_locator(MultipleLocator(0.25))
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v:.2f}")
+    header(fig, t, "Currency carry paid until 2012, and very little since",
+           "Growth of 1 in euro-neutral G10 style portfolios against the euro (long 3, short 3), after costs; "
+           "Sharpe ratio before / after 2013",
+           d["source"])
+    return fig
+
+
+FIGURES = {"fund_growth": (fund_growth, "main"), "momentum_overfitting": (overfitting, "main"),
+           "pairs_variants": (pairs_variants, "main"), "volatility_target": (vol_target, "main"),
+           "fx_styles": (fx_styles, "fx")}
+LOADERS = {"main": load, "fx": load_fx}
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Draw the README figures (light and dark variants).")
     parser.add_argument("--out", default=str(data.repository_root() / "docs" / "figures"))
     parser.add_argument("--synthetic", action="store_true", help="use simulated prices (offline)")
+    parser.add_argument("--only", nargs="*", choices=list(FIGURES), help="draw only these figures")
     args = parser.parse_args(argv)
     import matplotlib
     matplotlib.use("Agg")
-    d = load(official=not args.synthetic)
-    for name, builder in FIGURES.items():
-        for path in render(builder, name, Path(args.out), d):
+    names = args.only or list(FIGURES)
+    inputs = {key: LOADERS[key](official=not args.synthetic) for key in {FIGURES[n][1] for n in names}}
+    for name in names:
+        builder, key = FIGURES[name]
+        for path in render(builder, name, Path(args.out), inputs[key]):
             print(path)
 
 

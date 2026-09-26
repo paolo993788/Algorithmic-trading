@@ -1,6 +1,6 @@
 # Backtest engine: C++ strategy simulation and overfitting diagnostics for Python
 
-A C++17 library exposed to Python with pybind11 for researching systematic strategies without look-ahead bias: a Kalman filter for dynamic hedge ratios, pairs-trading and time-series momentum backtests (single horizon or horizon ensemble, with an optional portfolio volatility target) with execution lag and transaction costs, parameter grids evaluated in parallel, combinatorially symmetric cross-validation (probability of backtest overfitting) and the stationary bootstrap. The Python package adds reference implementations, walk-forward estimation and an adaptive z-score, cointegration tests, performance metrics with the deflated Sharpe ratio, portfolio risk controls (volatility targeting, drawdown control, VaR/ES, Basel traffic light, stress tests) and loaders for official data from FRED (EIA, Federal Reserve) and the ECB.
+A C++17 library exposed to Python with pybind11 for researching systematic strategies without look-ahead bias: a Kalman filter for dynamic hedge ratios, pairs-trading and time-series momentum backtests (single horizon or horizon ensemble, with an optional portfolio volatility target) with execution lag and transaction costs, parameter grids evaluated in parallel, combinatorially symmetric cross-validation (probability of backtest overfitting) and the stationary bootstrap. The Python package adds reference implementations, walk-forward estimation and an adaptive z-score, cointegration tests, performance metrics with the deflated Sharpe ratio, portfolio risk controls (volatility targeting, drawdown control, VaR/ES, Basel traffic light, stress tests), currency factor strategies (carry, momentum, value) with Newey-West statistics and UIP regressions, and loaders for official data from FRED (EIA, Federal Reserve, OECD) and the ECB.
 
 ## Requirements
 
@@ -44,6 +44,7 @@ python -m backtest_engine.data --fred DCOILWTICO DCOILBRENTEU DHHNGSP DGS10 --ec
 | --- | --- |
 | [`notebooks/statistical_arbitrage/wti_brent_kalman_pairs.ipynb`](../../notebooks/statistical_arbitrage/wti_brent_kalman_pairs.ipynb) | Cointegration of WTI and Brent, Kalman hedge ratio with maximum-likelihood hyperparameters, in-sample grid search and out-of-sample test, costs and execution lag, PBO, deflated Sharpe ratio and bootstrap, walk-forward re-estimation and adaptive z-score. |
 | [`notebooks/trend_following/multi_asset_time_series_momentum.ipynb`](../../notebooks/trend_following/multi_asset_time_series_momentum.ipynb) | Time-series momentum with volatility targeting on currencies, energy and Treasuries; look-back choice, robustness heat map, in-sample selection, PBO, deflated Sharpe ratio, costs, horizon ensemble with a portfolio volatility target. |
+| [`notebooks/case_studies/fx_style_premia.ipynb`](../../notebooks/case_studies/fx_style_premia.ipynb) | Currency style premia for a euro investor: excess returns of nine G10 currencies, Fama UIP regressions, carry, momentum and value portfolios after costs, crash risk against the VIX, volatility-targeted, variance-managed and VIX-filtered carry, a risk-balanced combination, 54-configuration grid with PBO and deflated Sharpe ratios, and a decision against criteria fixed in advance. |
 | [`notebooks/case_studies/multi_strategy_investment_committee.ipynb`](../../notebooks/case_studies/multi_strategy_investment_committee.ipynb) | Investment-committee review of a fund combining the two strategies: volatility budgets, fund volatility cap, drawdown control, VaR/ES and VaR backtest, stress tests, deflated Sharpe ratio over all research trials, go/pilot/no-go decision and limits, generated memo. |
 
 Official data are downloaded by default. Set `BACKTEST_ENGINE_DATA_MODE=synthetic` before starting Jupyter to run offline on simulated data.
@@ -56,6 +57,8 @@ Official data are downloaded by default. Set `BACKTEST_ENGINE_DATA_MODE=syntheti
 | FRED `DHHNGSP` | CSV | Henry Hub natural gas spot price, USD per million Btu, daily; source EIA. |
 | FRED `DGS10` | CSV | 10-year Treasury constant-maturity yield, percent, daily; source Federal Reserve H.15. |
 | ECB euro reference rates | ZIP with CSV | Units of foreign currency per euro, daily since 1999. |
+| FRED `IR3TIB01{CC}M156N` (EZ, US, JP, GB, CH, SE, NO, CA, AU, NZ) and `IRSTCI01JPM156N` | CSV | OECD Main Economic Indicators: 3-month interbank rates, percent per year, monthly averages; Japanese call-money rate used before April 2002. |
+| FRED `VIXCLS` | CSV | CBOE Volatility Index, daily close. |
 
 Downloads are cached in `data/raw/fred/` and `data/raw/ecb/`, which Git ignores; `BACKTEST_ENGINE_DATA_DIR` changes the cache folder. EIA and Federal Reserve data are in the public domain and ECB statistics may be reused with acknowledgement; the data are downloaded rather than committed so that their source and vintage remain explicit.
 
@@ -65,6 +68,7 @@ Downloads are cached in `data/raw/fred/` and `data/raw/ecb/`, which Git ignores;
 | --- | --- |
 | `outputs/wti_brent_pairs/*.png` | Prices, rolling cointegration, hedge ratio, grid search, overfitting and robust-variant figures. |
 | `outputs/time_series_momentum/*.png`, `variant_returns.csv` | Universe, baseline performance, robustness heat map, overfitting and ensemble figures; daily returns of the variants. |
+| `outputs/fx_factors/*.png` | Cumulative style returns and the in-sample versus out-of-sample scatter of the configuration grid. |
 | `outputs/investment_committee/*.png`, `memo.md` | Fund performance figures and the committee memo generated from the results. |
 | `docs/figures/*-light.png`, `*-dark.png` | README charts drawn by `python -m backtest_engine.readme_figures` (official data; `--synthetic` offline); the only generated files committed. |
 
@@ -90,11 +94,13 @@ Downloads are cached in `data/raw/fred/` and `data/raw/ecb/`, which Git ignores;
 
 **Statistics** (`backtest_engine/metrics.py`, `backtest_engine/cointegration.py`): probabilistic and deflated Sharpe ratios (Bailey and Lopez de Prado, 2012, 2014) with the expected maximum Sharpe ratio of $N$ trials $\sqrt{V}\,[(1-\gamma)\Phi^{-1}(1-1/N) + \gamma\Phi^{-1}(1-1/(Ne))]$; ADF test with AIC lag selection and Engle-Granger test with the critical values of MacKinnon (2010); AR(1) half-life. The 10-year Treasury total return index reprices a constant-maturity par bond daily and accrues its coupon over calendar days.
 
+**Currency factors** (`backtest_engine/fx_factors.py`): month-end ECB spot rates $S$ (euros per unit of currency) and OECD 3-month rates $i$; monthly log excess return $rx_{c,t+1} = \ln(1 + i_{c,t}/1200) - \ln(1 + i_{EUR,t}/1200) + \Delta\ln S_{c,t+1}$ (covered interest parity approximates a one-month forward). Signals known at the end of month $t$: interest differential (carry), cumulative excess return over $L$ months skipping $k$ (momentum), $\ln$ of the average spot rate around 60 months earlier minus $\ln S_t$ (value proxy, nominal). Euro-neutral portfolios, long the $n$ highest and short the $n$ lowest signals with equal or demeaned-rank weights, held over month $t+1$; costs proportional to turnover, entries included. Newey-West (Bartlett) standard errors; Fama regressions of $\Delta\ln S_{t+1}$ on $(i_{EUR} - i_c)_t$ by currency and pooled with currency intercepts (standard errors clustered by month with Newey-West lags); volatility scaling by trailing volatility and variance management by the realised variance of daily spot returns in the previous month (Moreira and Muir, 2017).
+
 **Random numbers**: xoshiro256** with SplitMix64 seeding (portable across compilers). The notebooks fix `SEED` for the bootstrap.
 
 ## Verification
 
-Run `python -m pytest tests/backtest_engine` from the repository root (56 tests, about 10 seconds). Main checks:
+Run `python -m pytest tests/backtest_engine` from the repository root (65 tests, about 10 seconds). Main checks:
 
 | Check | Tolerance and justification |
 | --- | --- |
@@ -120,6 +126,12 @@ Run `python -m pytest tests/backtest_engine` from the repository root (56 tests,
 | Bootstrap and CSCV reproducibility with 1 and 4 threads | bitwise equality |
 | Expected maximum Sharpe of 1,000 trials vs simulation | 0.05 |
 | ADF and Engle-Granger statistics vs statsmodels (when installed) | relative $10^{-10}$ |
+| Currency excess returns and cross-sectional weights on hand-computed examples (sides, ties, missing signals, rank weights) | exact |
+| Currency signals and volatility scaling: future shocks leave earlier values unchanged; momentum skips the current month; value averages the intended window | exact equality |
+| Currency portfolio timing (weights at $t$ earn month $t+1$) and cost accounting including entries | exact |
+| Newey-West with zero lags equals White standard errors; coefficients equal OLS | relative $10^{-12}$ |
+| Realised variance of daily spot returns under the previous month's weights; variance management uses the previous month | exact |
+| Fama regression on simulated data where uncovered interest parity holds | pooled slope within 0.05 of 1 |
 | MacKinnon critical values vs statsmodels (when installed) | relative $10^{-12}$ |
 
 ## References
@@ -129,13 +141,20 @@ Run `python -m pytest tests/backtest_engine` from the repository root (56 tests,
 - Bailey, D. H. and Lopez de Prado, M. (2014). The deflated Sharpe ratio: correcting for selection bias, backtest overfitting and non-normality. *Journal of Portfolio Management*, 40(5), 94-107.
 - Basel Committee on Banking Supervision (1996). Supervisory framework for the use of "backtesting" in conjunction with the internal models approach to market risk capital requirements.
 - Blackman, D. and Vigna, S. (2021). Scrambled linear pseudorandom number generators. *ACM Transactions on Mathematical Software*, 47(4). Public-domain reference code: https://prng.di.unimi.it/
+- Asness, C. S., Moskowitz, T. J. and Pedersen, L. H. (2013). Value and momentum everywhere. *Journal of Finance*, 68(3), 929-985.
+- Brunnermeier, M. K., Nagel, S. and Pedersen, L. H. (2009). Carry trades and currency crashes. *NBER Macroeconomics Annual*, 23, 313-347.
 - Chan, E. (2013). *Algorithmic Trading: Winning Strategies and Their Rationale*. Wiley.
 - Engle, R. F. and Granger, C. W. J. (1987). Co-integration and error correction: representation, estimation, and testing. *Econometrica*, 55(2), 251-276.
+- Fama, E. F. (1984). Forward and spot exchange rates. *Journal of Monetary Economics*, 14(3), 319-338.
 - Harvey, C. R. and Liu, Y. (2015). Backtesting. *Journal of Portfolio Management*, 42(1), 13-28.
 - Lo, A. W. (2002). The statistics of Sharpe ratios. *Financial Analysts Journal*, 58(4), 36-52.
+- Lustig, H., Roussanov, N. and Verdelhan, A. (2011). Common risk factors in currency markets. *Review of Financial Studies*, 24(11), 3731-3777.
 - MacKinnon, J. G. (2010). Critical values for cointegration tests. Queen's Economics Department Working Paper 1227.
+- Menkhoff, L., Sarno, L., Schmeling, M. and Schrimpf, A. (2012). Currency momentum strategies. *Journal of Financial Economics*, 106(3), 660-684.
+- Menkhoff, L., Sarno, L., Schmeling, M. and Schrimpf, A. (2017). Currency value. *Review of Financial Studies*, 30(2), 416-441.
 - Moreira, A. and Muir, T. (2017). Volatility-managed portfolios. *Journal of Finance*, 72(4), 1611-1644.
 - Moskowitz, T. J., Ooi, Y. H. and Pedersen, L. H. (2012). Time series momentum. *Journal of Financial Economics*, 104(2), 228-250.
+- Newey, W. K. and West, K. D. (1987). A simple, positive semi-definite, heteroskedasticity and autocorrelation consistent covariance matrix. *Econometrica*, 55(3), 703-708.
 - Politis, D. N. and Romano, J. P. (1994). The stationary bootstrap. *Journal of the American Statistical Association*, 89(428), 1303-1313.
 - Said, S. E. and Dickey, D. A. (1984). Testing for unit roots in autoregressive-moving average models of unknown order. *Biometrika*, 71(3), 599-607.
-- Data: FRED, Federal Reserve Bank of St. Louis (https://fred.stlouisfed.org); U.S. Energy Information Administration; Board of Governors of the Federal Reserve System; European Central Bank.
+- Data: FRED, Federal Reserve Bank of St. Louis (https://fred.stlouisfed.org); U.S. Energy Information Administration; Board of Governors of the Federal Reserve System; OECD Main Economic Indicators; Chicago Board Options Exchange (VIX); European Central Bank.

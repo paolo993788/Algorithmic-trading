@@ -2,6 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
 ![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
+![R](https://img.shields.io/badge/R-4.2%2B-276DC3?logo=r&logoColor=white)
 ![pybind11](https://img.shields.io/badge/bindings-pybind11-5C6BC0)
 ![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)
 ![Data](https://img.shields.io/badge/data-ECB%20%7C%20EIA%20%7C%20FRED-2E7D32)
@@ -56,6 +57,7 @@ The charts are drawn by `python -m backtest_engine.readme_figures` with the same
 | [Investment committee review of a two-sleeve fund](notebooks/case_studies/multi_strategy_investment_committee.ipynb) | Should the committee launch a fund combining trend and relative value, at what size and under which limits? | ECB reference rates, EIA spot prices |
 | [WTI-Brent statistical arbitrage](notebooks/statistical_arbitrage/wti_brent_kalman_pairs.ipynb) | Is the WTI-Brent spread a tradable mean-reversion opportunity after costs, and how much of the backtest survives out of sample? | EIA spot prices (FRED `DCOILWTICO`, `DCOILBRENTEU`) |
 | [Multi-asset time-series momentum](notebooks/trend_following/multi_asset_time_series_momentum.ipynb) | Does trend following work on this universe, how sensitive is it to its parameters, and does an ensemble with a volatility target help? | ECB reference rates, EIA energy prices, Federal Reserve 10-year yield |
+| [WTI-Brent cointegration in R](notebooks/r_crosschecks/wti_brent_cointegration_r.ipynb) (R) | Do R's cointegration tests (urca, tseries) confirm the Python Engle-Granger results, and what does the Johansen test add? | EIA spot prices (FRED) |
 
 Each notebook states its rules, signal timing, costs and data sources, fixes its random seeds, separates in-sample from out-of-sample periods, counts the configurations tried and ends with an interpretation guide. Figures, tables and the committee memo are written to `outputs/`.
 
@@ -85,12 +87,14 @@ python -m pytest tests/backtest_engine
 
 Open a notebook in Visual Studio Code (extensions *Python*, *Jupyter* and *C/C++*) and select the `.venv` environment as kernel. Official data are downloaded and cached on first use; set `BACKTEST_ENGINE_DATA_MODE=synthetic` to run offline on simulated data. Details, methods and the full validation table are in the [project README](scripts/backtest_engine/README.md).
 
+The notebooks are stored with the outputs of a full run on official data (September 2026), so tables and charts can be read directly on GitHub. The R notebooks in [`notebooks/r_crosschecks/`](notebooks/r_crosschecks/README.md) recompute the main results with independent R packages; they need R 4.2 or later: run `Rscript notebooks/r_crosschecks/install_packages.R` once and select the **R** kernel.
+
 ## Repository layout
 
 ```text
 .
 ├── scripts/backtest_engine/   C++ engine (cpp/), Python package, build and dependency files
-├── notebooks/                 case_studies/, statistical_arbitrage/, trend_following/
+├── notebooks/                 case_studies/, statistical_arbitrage/, trend_following/, r_crosschecks/ (R)
 ├── tests/backtest_engine/     validation suite (pytest)
 ├── docs/                      project README template and publishing workflow
 ├── data/                      download cache (ignored by Git) and small examples

@@ -1,6 +1,6 @@
 # Backtest engine: C++ strategy simulation and overfitting diagnostics for Python
 
-A C++17 library exposed to Python with pybind11 for researching systematic strategies without look-ahead bias: a Kalman filter for dynamic hedge ratios, pairs-trading and time-series momentum backtests (single horizon or horizon ensemble, with an optional portfolio volatility target) with execution lag and transaction costs, parameter grids evaluated in parallel, combinatorially symmetric cross-validation (probability of backtest overfitting) and the stationary bootstrap. The Python package adds reference implementations, walk-forward estimation and an adaptive z-score, cointegration tests, performance metrics with the deflated Sharpe ratio, portfolio risk controls (volatility targeting, drawdown control, VaR/ES, Basel traffic light, stress tests), currency factor strategies (carry, momentum, value) with Newey-West statistics and UIP regressions, a futures layer that turns contract prices into tradable returns (exchange calendars, roll schedules, adjusted continuous series, carry, P&L in contracts) validated against the Schwartz-Smith two-factor model, and loaders for official data from FRED (EIA, Federal Reserve, OECD) and the ECB.
+A C++17 library exposed to Python with pybind11 for researching systematic strategies without look-ahead bias: a Kalman filter for dynamic hedge ratios, pairs-trading and time-series momentum backtests (single horizon or horizon ensemble, with an optional portfolio volatility target) with execution lag and transaction costs, parameter grids evaluated in parallel, combinatorially symmetric cross-validation (probability of backtest overfitting) and the stationary bootstrap. The Python package adds reference implementations, walk-forward estimation and an adaptive z-score, cointegration tests, performance metrics with the deflated Sharpe ratio, portfolio risk controls (volatility targeting, drawdown control, VaR/ES, Basel traffic light, stress tests), currency factor strategies (carry, momentum, value) with Newey-West statistics and UIP regressions, a futures layer that turns contract prices into tradable returns (exchange calendars, roll schedules, adjusted continuous series, carry, P&L in contracts) validated against the Schwartz-Smith two-factor model, statistical validation of strategy grids (White's Reality Check, Hansen's SPA test and the Romano-Wolf stepdown on a joint stationary bootstrap in C++, effective number of trials, Andrews break test, episode dependence, purged and combinatorial cross-validation), and loaders for official data from FRED (EIA, Federal Reserve, OECD) and the ECB.
 
 ## Requirements
 
@@ -45,6 +45,7 @@ python -m backtest_engine.data --fred DCOILWTICO DCOILBRENTEU DHHNGSP DGS10 --ec
 | [`notebooks/statistical_arbitrage/wti_brent_kalman_pairs.ipynb`](../../notebooks/statistical_arbitrage/wti_brent_kalman_pairs.ipynb) | Cointegration of WTI and Brent, Kalman hedge ratio with maximum-likelihood hyperparameters, in-sample grid search and out-of-sample test, costs and execution lag, PBO, deflated Sharpe ratio and bootstrap, walk-forward re-estimation and adaptive z-score. |
 | [`notebooks/trend_following/multi_asset_time_series_momentum.ipynb`](../../notebooks/trend_following/multi_asset_time_series_momentum.ipynb) | Time-series momentum with volatility targeting on currencies, energy and Treasuries; look-back choice, robustness heat map, in-sample selection, PBO, deflated Sharpe ratio, costs, horizon ensemble with a portfolio volatility target. |
 | [`notebooks/case_studies/fx_style_premia.ipynb`](../../notebooks/case_studies/fx_style_premia.ipynb) | Currency style premia for a euro investor: excess returns of nine G10 currencies, Fama UIP regressions, carry, momentum and value portfolios after costs, crash risk against the VIX, volatility-targeted, variance-managed and VIX-filtered carry, a risk-balanced combination, 54-configuration grid with PBO and deflated Sharpe ratios, and a decision against criteria fixed in advance. |
+| [`notebooks/strategy_validation/data_snooping_and_multiple_testing.ipynb`](../../notebooks/strategy_validation/data_snooping_and_multiple_testing.ipynb) | Reality Check, SPA and Romano-Wolf on the 228 configurations of the momentum, currency and pairs grids (full sample, in and out of sample), effective number of trials and the deflated Sharpe ratio, Monte Carlo size check with the grid's own correlation, costs, break tests, dependence on single episodes, block-length and benchmark robustness. |
 | [`notebooks/case_studies/multi_strategy_investment_committee.ipynb`](../../notebooks/case_studies/multi_strategy_investment_committee.ipynb) | Investment-committee review of a fund combining the two strategies: volatility budgets, fund volatility cap, drawdown control, VaR/ES and VaR backtest, stress tests, deflated Sharpe ratio over all research trials, go/pilot/no-go decision and limits, generated memo. |
 
 Official data are downloaded by default. Set `BACKTEST_ENGINE_DATA_MODE=synthetic` before starting Jupyter to run offline on simulated data.
@@ -71,6 +72,7 @@ Downloads are cached in `data/raw/fred/`, `data/raw/ecb/` and `data/raw/eia/`, w
 | `outputs/wti_brent_pairs/*.png` | Prices, rolling cointegration, hedge ratio, grid search, overfitting and robust-variant figures. |
 | `outputs/time_series_momentum/*.png`, `variant_returns.csv` | Universe, baseline performance, robustness heat map, overfitting and ensemble figures; daily returns of the variants. |
 | `outputs/fx_factors/*.png` | Cumulative style returns and the in-sample versus out-of-sample scatter of the configuration grid. |
+| `outputs/strategy_validation/*.png` | Null distribution of the best t-statistic, sorted t-statistics with stepdown and Bonferroni thresholds, episode dependence. |
 | `outputs/investment_committee/*.png`, `memo.md` | Fund performance figures and the committee memo generated from the results. |
 | `docs/figures/*-light.png`, `*-dark.png` | README charts drawn by `python -m backtest_engine.readme_figures` (official data; `--synthetic` offline); the only generated files committed. |
 
@@ -113,11 +115,22 @@ Downloads are cached in `data/raw/fred/`, `data/raw/ecb/` and `data/raw/eia/`, w
 - Simulation is exact.
 - It is used only to validate the futures layer, never as evidence about real markets.
 
+**Strategy validation** (`backtest_engine/validation.py`, `backtest_engine/cross_validation.py`, `cpp/overfitting.hpp`; learning note [`docs/learning/statistics/data_snooping_and_multiple_testing.md`](../../docs/learning/statistics/data_snooping_and_multiple_testing.md)):
+
+- **Setting:** for $K$ strategies with performance $d_{t,k}$ relative to a benchmark, the rows are resampled jointly by the stationary bootstrap (C++; replicate $b$ uses stream $(seed, b)$), with the mean block length of Politis and White (2004, corrected 2009). $\hat\omega_k^2 = \hat\gamma_0 + 2\sum_i \kappa(T,i)\hat\gamma_i$ is the exact bootstrap variance of $\sqrt T \bar d_k$.
+- **Reality Check (White, 2000):** $\max_k \sqrt T \bar d_k$ against $\max_k \sqrt T(\bar d^*_k - \bar d_k)$.
+- **SPA (Hansen, 2005):** studentised and recentred, with lower, consistent and upper $p$-values.
+- **Romano-Wolf stepdown:** adjusted $p$-values from the running maximum of $\#\{\max_{l \ge i} t^*_{(l)} \ge t_{(i)}\}/B$ (Romano and Wolf, 2005, 2016).
+- **Effective number of trials:** the number of independent normal trials with the same expected maximum as the bootstrap $\max_k t^*_k$, used in the deflated Sharpe ratio next to the raw count.
+- **Break test:** Andrews (1993) sup-Wald for a break in the mean with Newey-West variance and a simulated null.
+- **Episode dependence:** Sharpe ratio after removing the best or worst periods.
+- **Purged cross-validation:** purged and embargoed k-fold and combinatorial purged splits (Lopez de Prado, 2018).
+
 **Random numbers**: xoshiro256** with SplitMix64 seeding (portable across compilers). The notebooks fix `SEED` for the bootstrap; the Schwartz-Smith simulations use NumPy's PCG64 with fixed seeds.
 
 ## Verification
 
-Run `python -m pytest tests/backtest_engine` from the repository root (84 tests, about 12 seconds). Main checks:
+Run `python -m pytest tests/backtest_engine` from the repository root (97 tests, about 16 seconds). Main checks:
 
 | Check | Tolerance and justification |
 | --- | --- |
@@ -162,6 +175,15 @@ Run `python -m pytest tests/backtest_engine` from the repository root (84 tests,
 | Nearby panel round trip; calendar-alignment test separates the true calendar from one shifted by a day | exact; $t > 5$ and $t < -5$ |
 | Schwartz-Smith: exact transition moments; futures price = risk-neutral expectation of the spot; expected gross return and martingale property without premia; Samuelson volatility term structure | 4 Monte Carlo standard errors (Type I error about $6\times10^{-5}$); 1% for covariances and volatilities with 200,000-400,000 draws |
 | Whole pipeline (CL calendar, roll schedule, tradable returns, 200 paths of four years) earns the closed-form risk premium of the contracts actually held | within 4 standard errors, with the premium more than 8 standard errors from zero (power check) |
+| Joint bootstrap: means equal those of the returned index streams; identical with 1 and 4 threads; block starts at rate $1/L$; the refactored Sharpe bootstrap is bitwise unchanged | exact; 2% |
+| Bootstrap variance formula vs 20,000 C++ replicates (AR(1), block lengths 1, 5, 25); i.i.d. case | 5%; exact |
+| Politis-White block length on AR(1) vs the closed form $(2\rho/(1-\rho^2))^{2/3}T^{1/3}$ | 25% ($T$ = 20,000) |
+| Size: 20 null strategies, naive test rejects in more than 45% of 150 samples, Reality Check and SPA below 10% (nominal 5%) | binomial s.d. 1.8% |
+| Power: SPA detects one skilled strategy ($t \approx 4.5$) in more than 90% of samples; 50 poor, volatile strategies destroy the Reality Check's power but not SPA's | Monte Carlo |
+| Romano-Wolf: family-wise error below 10% in 100 null samples; more discoveries than Bonferroni under correlation (84 vs 20 over 10 samples); monotone adjusted p-values | Monte Carlo |
+| Effective trials: 1 for identical, $m$ for $m$ groups of identical, $K$ for independent trials; expected-maximum formula within 2% of the exact value; DSR with an effective count | 1-10% |
+| Break test: simulated critical values vs Andrews (1993) (7.12, 8.68, 12.16); size; detection and dating of a planted break | 4%; below 12%; exact |
+| Purged cross-validation: no training label overlaps a test label span, embargo respected, folds partition the sample, $C(N-1,k-1)$ test appearances and $\phi$ paths | exact |
 
 ## References
 
@@ -172,24 +194,32 @@ Run `python -m pytest tests/backtest_engine` from the repository root (84 tests,
 - Blackman, D. and Vigna, S. (2021). Scrambled linear pseudorandom number generators. *ACM Transactions on Mathematical Software*, 47(4). Public-domain reference code: https://prng.di.unimi.it/
 - Asness, C. S., Moskowitz, T. J. and Pedersen, L. H. (2013). Value and momentum everywhere. *Journal of Finance*, 68(3), 929-985.
 - Brunnermeier, M. K., Nagel, S. and Pedersen, L. H. (2009). Carry trades and currency crashes. *NBER Macroeconomics Annual*, 23, 313-347.
+- Andrews, D. W. K. (1993). Tests for parameter instability and structural change with unknown change point. *Econometrica*, 61(4), 821-856.
 - Chan, E. (2013). *Algorithmic Trading: Winning Strategies and Their Rationale*. Wiley.
 - Erb, C. B. and Harvey, C. R. (2006). The strategic and tactical value of commodity futures. *Financial Analysts Journal*, 62(2), 69-97.
 - Engle, R. F. and Granger, C. W. J. (1987). Co-integration and error correction: representation, estimation, and testing. *Econometrica*, 55(2), 251-276.
 - Fama, E. F. (1984). Forward and spot exchange rates. *Journal of Monetary Economics*, 14(3), 319-338.
 - Gorton, G. and Rouwenhorst, K. G. (2006). Facts and fantasies about commodity futures. *Financial Analysts Journal*, 62(2), 47-68.
+- Hansen, P. R. (2005). A test for superior predictive ability. *Journal of Business and Economic Statistics*, 23(4), 365-380.
 - Harvey, C. R. and Liu, Y. (2015). Backtesting. *Journal of Portfolio Management*, 42(1), 13-28.
 - Koijen, R. S. J., Moskowitz, T. J., Pedersen, L. H. and Vrugt, E. B. (2018). Carry. *Journal of Financial Economics*, 127(2), 197-225.
 - Lo, A. W. (2002). The statistics of Sharpe ratios. *Financial Analysts Journal*, 58(4), 36-52.
 - Lustig, H., Roussanov, N. and Verdelhan, A. (2011). Common risk factors in currency markets. *Review of Financial Studies*, 24(11), 3731-3777.
+- Lopez de Prado, M. (2018). *Advances in Financial Machine Learning*. Wiley.
 - MacKinnon, J. G. (2010). Critical values for cointegration tests. Queen's Economics Department Working Paper 1227.
 - Menkhoff, L., Sarno, L., Schmeling, M. and Schrimpf, A. (2012). Currency momentum strategies. *Journal of Financial Economics*, 106(3), 660-684.
 - Menkhoff, L., Sarno, L., Schmeling, M. and Schrimpf, A. (2017). Currency value. *Review of Financial Studies*, 30(2), 416-441.
 - Moreira, A. and Muir, T. (2017). Volatility-managed portfolios. *Journal of Finance*, 72(4), 1611-1644.
 - Moskowitz, T. J., Ooi, Y. H. and Pedersen, L. H. (2012). Time series momentum. *Journal of Financial Economics*, 104(2), 228-250.
 - Newey, W. K. and West, K. D. (1987). A simple, positive semi-definite, heteroskedasticity and autocorrelation consistent covariance matrix. *Econometrica*, 55(3), 703-708.
+- Patton, A., Politis, D. N. and White, H. (2009). Correction to "Automatic block-length selection for the dependent bootstrap". *Econometric Reviews*, 28(4), 372-375.
 - Politis, D. N. and Romano, J. P. (1994). The stationary bootstrap. *Journal of the American Statistical Association*, 89(428), 1303-1313.
 - Samuelson, P. A. (1965). Proof that properly anticipated prices fluctuate randomly. *Industrial Management Review*, 6(2), 41-49.
 - Schwartz, E. S. and Smith, J. E. (2000). Short-term variations and long-term dynamics in commodity prices. *Management Science*, 46(7), 893-911.
+- Politis, D. N. and White, H. (2004). Automatic block-length selection for the dependent bootstrap. *Econometric Reviews*, 23(1), 53-70.
+- Romano, J. P. and Wolf, M. (2005). Stepwise multiple testing as formalized data snooping. *Econometrica*, 73(4), 1237-1282.
+- Romano, J. P. and Wolf, M. (2016). Efficient computation of adjusted p-values for resampling-based stepdown multiple testing. *Statistics and Probability Letters*, 113, 38-40.
 - Said, S. E. and Dickey, D. A. (1984). Testing for unit roots in autoregressive-moving average models of unknown order. *Biometrika*, 71(3), 599-607.
 - CME Group. Contract specifications for NYMEX CL, HO, RB and NG (https://www.cmegroup.com).
+- White, H. (2000). A reality check for data snooping. *Econometrica*, 68(5), 1097-1126.
 - Data: FRED, Federal Reserve Bank of St. Louis (https://fred.stlouisfed.org); U.S. Energy Information Administration (https://www.eia.gov/opendata/); Board of Governors of the Federal Reserve System; OECD Main Economic Indicators; Chicago Board Options Exchange (VIX); European Central Bank.

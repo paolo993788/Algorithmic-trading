@@ -1,6 +1,7 @@
 """Pairs-trading backtest: exact agreement with the reference, a hand-computed case and cost accounting."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from backtest_engine import reference, require_cpp, strategies, synthetic
@@ -86,3 +87,27 @@ def test_no_look_ahead_in_positions_and_pnl():
     # Positions held up to day 1500 were decided by day 1499; P&L up to day 1499 uses prices up to 1499.
     np.testing.assert_array_equal(base["units_y"].iloc[:1501], shocked["units_y"].iloc[:1501])
     np.testing.assert_array_equal(base["pnl"].iloc[:1500], shocked["pnl"].iloc[:1500])
+
+
+def test_walk_forward_signals_use_only_past_years():
+    pair = synthetic.cointegrated_pair(n=3000, start="2000-01-03", seed=21)
+    sig, params = strategies.walk_forward_kalman(pair["y"], pair["x"], first_year=2008)
+    assert list(params.index) == list(range(2008, int(pair.index.max().year) + 1))
+    shocked_y = pair["y"].copy()
+    shocked_y.loc["2010-01-01":] += 40.0
+    sig2, params2 = strategies.walk_forward_kalman(shocked_y, pair["x"], first_year=2008)
+    before = sig.index < "2010-01-01"
+    pd.testing.assert_frame_equal(sig.loc[before], sig2.loc[before])
+    pd.testing.assert_frame_equal(params.loc[:2009], params2.loc[:2009])
+
+
+def test_adaptive_zscore_is_causal_and_close_to_unit_variance():
+    pair = synthetic.cointegrated_pair(n=4000, seed=22)
+    sig = strategies.kalman_hedge(pair["y"], pair["x"], 1e-5, 0.3)
+    z = strategies.adaptive_zscore(sig)
+    assert z.iloc[200:].std() == pytest.approx(1.0, rel=0.1)
+    shocked = sig.copy()
+    shocked.iloc[3000:, shocked.columns.get_loc("error")] *= 5
+    z2 = strategies.adaptive_zscore(shocked)
+    pd.testing.assert_series_equal(z.iloc[:3000], z2.iloc[:3000])
+    assert z2.iloc[3000] == pytest.approx(5 * z.iloc[3000], rel=1e-12)  # same scale, estimated before day 3000

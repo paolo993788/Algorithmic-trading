@@ -1,39 +1,55 @@
 # Algorithmic Trading
 
-Research code and notebooks on systematic trading strategies, built to be reproducible, well documented and honest about overfitting.
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
+![pybind11](https://img.shields.io/badge/bindings-pybind11-5C6BC0)
+![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)
+![Data](https://img.shields.io/badge/data-ECB%20%7C%20EIA%20%7C%20FRED-2E7D32)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-## Scope
+**Systematic strategy research with a C++17 backtesting engine driven from Python notebooks: no look-ahead, explicit costs and execution lags, walk-forward estimation, overfitting diagnostics and an investment-committee style go/no-go decision, on official ECB and EIA data.**
 
-The repository is organized around the following topics:
+Most backtests look good because of what they leave out: the configurations that were tried and discarded, the costs, the one-day delay between signal and trade, the single episode that made all the money. This repository puts those elements at the centre. The C++ engine runs parameter grids, combinatorially symmetric cross-validation and bootstraps in parallel; the notebooks use them to answer the questions a portfolio manager, a risk function or an allocator would ask before putting capital behind a strategy.
 
-- **Statistical arbitrage**: cointegration, mean reversion and pairs trading with dynamic hedge ratios.
-- **Trend following and momentum**: time-series momentum with volatility targeting across asset classes.
-- **Backtesting**: event-driven simulation with execution lags and transaction costs, free of look-ahead bias.
-- **Performance evaluation**: risk-adjusted metrics, bootstrap confidence intervals, the deflated Sharpe ratio and the probability of backtest overfitting.
+## Highlights
 
-## Repository layout
+Results on official data (ECB euro reference rates and EIA spot prices up to December 2025), after transaction costs and with a one-day execution lag. The momentum figures were produced without the 10-year Treasury leg, whose FRED series was not reachable at the time; with it, the numbers will differ.
 
-```text
-.
-├── scripts/     One folder per project, each with its own README
-├── notebooks/   Jupyter notebooks, grouped by topic
-├── docs/        Project README template and publishing workflow
-├── data/        Small synthetic or publicly redistributable datasets (data/examples/)
-├── outputs/     Generated results, not tracked by Git
-└── tests/       Automated checks
-```
+| Area | What is done | Key result |
+| --- | --- | --- |
+| Investment committee (case study) | Two-sleeve fund (trend + relative value) with volatility budgets, a fund volatility cap and drawdown control; VaR/ES, Basel traffic-light VaR backtest, stress tests, deflated Sharpe ratio, go/no-go against criteria fixed in advance | Sharpe ratio 0.43 in 2013-2025 with uncorrelated sleeves (correlation 0.00), but a bootstrap interval from -0.17 to 1.01, a deflated Sharpe ratio of 0.22 after 184 research trials and a 30% drawdown: **no-go**, with the limits a pilot would need |
+| Statistical arbitrage | WTI-Brent pairs with a Kalman hedge ratio, grid search, walk-forward re-estimation and an adaptive z-score | The in-sample winner earns a Sharpe ratio of 0.18 out of sample, and -0.12 without April-May 2020; frozen hyperparameters leave the signal miscalibrated (standard deviation of z 2.4 instead of 1); walk-forward re-estimation with an adaptive z raises the out-of-sample Sharpe ratio to 0.42 (0.30 without the 2020 episode) |
+| Trend following | Time-series momentum on currencies and energy, 104-configuration robustness grid, horizon ensemble, portfolio volatility target | PBO 0.57 and deflated Sharpe ratio 0.09: the grid search does not produce reliable evidence; the portfolio volatility target cuts the 10%-90% range of the ensemble's six-month volatility from 16 to 7 points, but overnight jumps (Henry Hub, January 2024) pass through |
+| Engineering | pybind11 extension, parallel grids and CSCV, thread-independent bootstrap, Python reference implementations | 55 automated tests, including explicit no-look-ahead checks for every signal and risk control |
+
+These are honest negative-to-modest results: spot prices ignore carry and roll yield, the momentum universe is small and energy-heavy, and a Sharpe ratio of 0.4 needs about 20 years of data to be statistically significant. The value of the repository is the process that reaches those conclusions.
 
 ## Catalogue
 
-| Item | Type | Description |
+| Item | Question | Data |
 | --- | --- | --- |
-| [`scripts/backtest_engine`](scripts/backtest_engine/README.md) | Python + C++ library | C++17 engines exposed with pybind11: Kalman-filter hedge ratios, pairs trading and time-series momentum backtests with costs and execution lag, parallel parameter grids, combinatorially symmetric cross-validation (probability of backtest overfitting) and stationary bootstrap; Python references, cointegration tests, deflated Sharpe ratio and FRED/ECB data loaders. |
-| [`notebooks/statistical_arbitrage/wti_brent_kalman_pairs.ipynb`](notebooks/statistical_arbitrage/wti_brent_kalman_pairs.ipynb) | Notebook | WTI-Brent pairs trading on EIA spot prices: cointegration, Kalman hedge ratio, in-sample selection, out-of-sample test, cost sensitivity and overfitting diagnostics. |
-| [`notebooks/trend_following/multi_asset_time_series_momentum.ipynb`](notebooks/trend_following/multi_asset_time_series_momentum.ipynb) | Notebook | Time-series momentum with volatility targeting on currencies (ECB), energy (EIA) and US Treasuries (Federal Reserve): robustness grid, deflated Sharpe ratio and probability of backtest overfitting. |
+| [`scripts/backtest_engine`](scripts/backtest_engine/README.md) (library) | Reusable C++/Python engines: Kalman filter, pairs and momentum backtests, parallel grids, CSCV/PBO, stationary bootstrap, walk-forward estimation, portfolio risk controls, VaR/ES and stress tests | FRED (EIA, Federal Reserve) and ECB loaders |
+| [Investment committee review of a two-sleeve fund](notebooks/case_studies/multi_strategy_investment_committee.ipynb) | Should the committee launch a fund combining trend and relative value, at what size and under which limits? | ECB reference rates, EIA spot prices |
+| [WTI-Brent statistical arbitrage](notebooks/statistical_arbitrage/wti_brent_kalman_pairs.ipynb) | Is the WTI-Brent spread a tradable mean-reversion opportunity after costs, and how much of the backtest survives out of sample? | EIA spot prices (FRED `DCOILWTICO`, `DCOILBRENTEU`) |
+| [Multi-asset time-series momentum](notebooks/trend_following/multi_asset_time_series_momentum.ipynb) | Does trend following work on this universe, how sensitive is it to its parameters, and does an ensemble with a volatility target help? | ECB reference rates, EIA energy prices, Federal Reserve 10-year yield |
+
+Each notebook states its rules, signal timing, costs and data sources, fixes its random seeds, separates in-sample from out-of-sample periods, counts the configurations tried and ends with an interpretation guide. Figures, tables and the committee memo are written to `outputs/`.
+
+## Architecture
+
+```text
+notebooks/  ──►  backtest_engine (Python)                  ──►  backtest_engine._core (C++17, pybind11)
+                 data loaders (FRED, ECB)                        Kalman filter, maximum-likelihood objective
+                 cointegration tests (ADF, Engle-Granger)        pairs backtest and parallel parameter grids
+                 walk-forward Kalman, adaptive z-score           momentum: single horizon, ensemble, portfolio vol target
+                 portfolio: vol targeting, drawdown control,     CSCV / probability of backtest overfitting
+                 VaR/ES, Basel traffic light, stress tests       stationary bootstrap (thread-independent streams)
+                 metrics: PSR, deflated Sharpe ratio
+```
 
 ## Getting started
 
-The notebooks run in Visual Studio Code (with the *Python*, *Jupyter* and *C/C++* extensions) or in Jupyter. The backtesting engines are written in C++ and compiled into a Python extension, so a C++17 compiler is required (Visual Studio Build Tools on Windows, Xcode Command Line Tools on macOS, GCC or Clang on Linux). From the repository root:
+Requirements: Python 3.10 or later and a C++17 compiler (Visual Studio Build Tools on Windows, Xcode Command Line Tools on macOS, GCC or Clang on Linux). From the repository root:
 
 ```bash
 python -m venv .venv
@@ -43,12 +59,28 @@ python -m pip install -e scripts/backtest_engine
 python -m pytest tests/backtest_engine
 ```
 
-Then open a notebook and select the `.venv` environment as kernel. The notebooks download official data (FRED, ECB) on first use; see the [project README](scripts/backtest_engine/README.md) for details and for the offline mode.
+Open a notebook in Visual Studio Code (extensions *Python*, *Jupyter* and *C/C++*) and select the `.venv` environment as kernel. Official data are downloaded and cached on first use; set `BACKTEST_ENGINE_DATA_MODE=synthetic` to run offline on simulated data. Details, methods and the full validation table are in the [project README](scripts/backtest_engine/README.md).
+
+## Repository layout
+
+```text
+.
+├── scripts/backtest_engine/   C++ engine (cpp/), Python package, build and dependency files
+├── notebooks/                 case_studies/, statistical_arbitrage/, trend_following/
+├── tests/backtest_engine/     validation suite (pytest)
+├── docs/                      project README template and publishing workflow
+├── data/                      download cache (ignored by Git) and small examples
+└── outputs/                   generated figures, tables and memos (ignored by Git)
+```
+
+## Roadmap
+
+Futures data with roll and carry; cross-sectional momentum and carry in FX; execution cost models calibrated on intraday data; regime detection for the pairs sleeve; live paper-trading monitor with the committee's limits.
 
 ## Conventions
 
 - Each project documents its purpose, inputs, outputs and exact run command, following the [project README template](docs/script-template.md).
-- Signals use only information available at the decision time; execution lags and transaction costs are explicit parameters.
+- Signals use only information available at the decision time; execution lags and transaction costs are explicit parameters, and tests check the absence of look-ahead.
 - Parameters are chosen in sample and evaluated out of sample; the number of configurations tried is reported together with overfitting diagnostics.
 - Simulations and bootstraps use a fixed, documented random seed.
 - Market data is committed only when its license allows redistribution; otherwise, the repository provides the code to download it.

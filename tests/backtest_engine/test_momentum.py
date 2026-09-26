@@ -66,3 +66,29 @@ def test_non_positive_prices_are_treated_as_missing():
     np.testing.assert_allclose(out["returns"], ref["returns"])
     assert np.all(np.isfinite(out["returns"]))
     assert np.all(np.abs(out["returns"]) < 0.1)  # no -150% or +340% artefacts around the negative price
+
+
+@pytest.mark.parametrize("portfolio_target", [0.0, 0.10])
+def test_ensemble_matches_reference(prices, portfolio_target):
+    args = (prices.to_numpy(), [21, 63, 126], 20.0, 0.4, 3.0, 0.0005, 1, 252.0, portfolio_target, 30.0, 3.0)
+    cpp = core.tsmom_ensemble_backtest(*args, True)
+    ref = reference.tsmom_ensemble_backtest(*args)
+    np.testing.assert_allclose(cpp["returns"], ref["returns"], rtol=1e-11, atol=1e-15)
+    np.testing.assert_allclose(cpp["weights"], ref["weights"], rtol=1e-11, atol=1e-15)
+
+
+def test_single_horizon_ensemble_equals_plain_momentum(prices):
+    plain = core.tsmom_backtest(prices.to_numpy(), 63, 20.0, 0.4, 3.0, 0.0005, 1, 252.0, False)
+    ens = core.tsmom_ensemble_backtest(prices.to_numpy(), [63], 20.0, 0.4, 3.0, 0.0005, 1, 252.0, 0.0, 60.0, 3.0, False)
+    np.testing.assert_allclose(ens["returns"], plain["returns"], rtol=1e-12, atol=1e-15)
+
+
+def test_portfolio_volatility_target_is_met_and_causal():
+    frame = synthetic.trending_prices(n=5000, n_assets=6, seed=8)
+    out = strategies.tsmom_ensemble(frame, portfolio_target_vol=0.10, portfolio_com=30.0)
+    realised = out["returns"].iloc[1000:].std() * np.sqrt(252)
+    assert realised == pytest.approx(0.10, rel=0.2)  # EWMA targeting is approximate
+    shocked = frame.copy()
+    shocked.iloc[3000:] *= 1.3
+    out2 = strategies.tsmom_ensemble(shocked, portfolio_target_vol=0.10, portfolio_com=30.0)
+    pd.testing.assert_series_equal(out["returns"].iloc[:3000], out2["returns"].iloc[:3000])

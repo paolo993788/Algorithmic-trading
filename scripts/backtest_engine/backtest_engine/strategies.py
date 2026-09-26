@@ -103,3 +103,51 @@ def probability_of_backtest_overfitting(returns: pd.DataFrame, S=16, n_threads=0
     """CSCV of Bailey, Borwein, Lopez de Prado and Zhu (2017) on a (time x configuration) frame."""
     core = require_cpp()
     return core.cscv(returns.to_numpy(dtype=float), S, n_threads)
+
+
+# --------------------------------------------------------------------------- robust variants
+
+
+def adaptive_zscore(signal: pd.DataFrame, halflife=60.0, min_periods=20) -> pd.Series:
+    """Forecast error standardised by an EWMA of past squared errors (information up to t - 1).
+
+    It keeps z close to unit variance when the model's own forecast variance drifts away
+    from the realised one (a common symptom of hyperparameters estimated on an old sample).
+    """
+    e = signal["error"]
+    variance = (e**2).ewm(halflife=halflife, min_periods=min_periods).mean().shift(1)
+    return (e / np.sqrt(variance)).rename("z_adaptive")
+
+
+def walk_forward_kalman(y: pd.Series, x: pd.Series, first_year: int, last_year=None, burn_in=60, init_var=1e4):
+    """Kalman signals re-estimated every calendar year on all data before it (expanding window).
+
+    For each year Y the hyperparameters (delta, obs_var) are estimated by maximum likelihood
+    on data up to 31 December of Y - 1; the filter is then run with them and only the
+    signals of year Y are kept. Returns the stitched signal frame and the yearly estimates.
+    """
+    last_year = int(y.index.max().year) if last_year is None else last_year
+    years = y.index.year
+    first_fit = fit_kalman_mle(y[years < first_year], x[years < first_year], burn_in, init_var)
+    stitched = kalman_hedge(y, x, first_fit["delta"], first_fit["obs_var"], init_var)
+    params = {}
+    for year in range(first_year, last_year + 1):
+        train = years < year
+        fit = first_fit if year == first_year else fit_kalman_mle(y[train], x[train], burn_in, init_var)
+        params[year] = fit
+        signal = kalman_hedge(y, x, fit["delta"], fit["obs_var"], init_var)
+        mask = years == year
+        stitched.loc[mask] = signal.loc[mask].to_numpy()
+    return stitched, pd.DataFrame(params).T
+
+
+def tsmom_ensemble(prices: pd.DataFrame, lookbacks=(21, 63, 126, 252), com=60.0, target_vol=0.40, max_leverage=5.0,
+                   cost=0.0, lag=1, periods_per_year=252.0, portfolio_target_vol=0.0, portfolio_com=60.0, max_scale=3.0):
+    """Momentum averaged over several horizons, optionally scaled to a portfolio volatility target."""
+    core = require_cpp()
+    out = core.tsmom_ensemble_backtest(prices.to_numpy(dtype=float), [int(v) for v in lookbacks], com, target_vol,
+                                       max_leverage, cost, lag, periods_per_year, portfolio_target_vol, portfolio_com,
+                                       max_scale, True)
+    frame = pd.DataFrame({"returns": out["returns"], "turnover": out["turnover"], "gross": out["gross"]}, index=prices.index)
+    frame.attrs["weights"] = pd.DataFrame(out["weights"], index=prices.index, columns=prices.columns)
+    return frame

@@ -136,6 +136,34 @@ def treasury_total_return_index(yields_percent: pd.Series, maturity: float = 10.
     return index
 
 
+def load_momentum_universe(start="1999-01-04", end="2025-12-31") -> pd.DataFrame:
+    """The eight-instrument universe of the momentum studies, in the notebooks' conventions.
+
+    Four currencies in euros (inverse of the ECB reference rates), WTI, Brent and Henry Hub spot prices (EIA via
+    FRED; non-positive prints treated as missing) and the 10-year Treasury total-return index; gaps are carried
+    forward for at most five days. These are spot proxies, not tradable futures (see `backtest_engine.futures`).
+    """
+    fx = load_ecb_fx_rates(("USD", "GBP", "JPY", "CHF"), start=start, end=end)
+    energy = load_fred(["DCOILWTICO", "DCOILBRENTEU", "DHHNGSP"], start="1988-01-01", end=end)
+    treasury = load_fred(["DGS10"], start=start, end=end)["DGS10"]
+    universe = pd.concat([(1.0 / fx).rename(columns=lambda c: f"{c} (in EUR)"),
+                          energy.loc[start:].where(energy > 0).rename(columns={"DCOILWTICO": "WTI",
+                                                                               "DCOILBRENTEU": "Brent",
+                                                                               "DHHNGSP": "Henry Hub"}),
+                          treasury_total_return_index(treasury).rename("UST 10Y TR")], axis=1, sort=True)
+    universe = universe.loc[start:end].ffill(limit=5)
+    universe.attrs["source"] = "ECB euro reference rates; EIA spot prices and Federal Reserve H.15 yields via FRED"
+    return universe
+
+
+def load_wti_brent(start="1988-01-01", end="2025-12-31") -> pd.DataFrame:
+    """WTI and Brent spot prices on their common trading days (EIA via FRED), USD per barrel."""
+    energy = load_fred(["DCOILWTICO", "DCOILBRENTEU"], start=start, end=end)
+    pair = energy.dropna().rename(columns={"DCOILWTICO": "WTI", "DCOILBRENTEU": "Brent"})
+    pair.attrs["source"] = FRED_DESCRIPTIONS["DCOILWTICO"] + "; " + FRED_DESCRIPTIONS["DCOILBRENTEU"]
+    return pair
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Download official data into the local cache.")
     parser.add_argument("--fred", nargs="*", default=[], help="FRED series identifiers")

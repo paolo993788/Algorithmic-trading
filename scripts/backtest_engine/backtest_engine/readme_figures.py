@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 
 from . import data, fx_factors as fx, metrics as mt, portfolio as pf, strategies as st, synthetic
-from .figstyle import end_label, header, label_offsets, new_figure, percent_axis, point_label, render
+from .figstyle import end_label, header, label_offsets, new_figure, percent_axis, render
 
 START, END = "1999-01-04", "2025-12-31"
 IS_END_MOMENTUM, IS_END_PAIRS = "2012-12-31", "2009-12-31"
@@ -28,14 +28,8 @@ FUND_START, EVAL_START, SLEEVE_VOL, DD_LEVELS, DD_WINDOW = "2010-01-01", "2013-0
 
 def load(official=True) -> dict:
     if official:
-        fx = data.load_ecb_fx_rates(("USD", "GBP", "JPY", "CHF"), start=START, end=END)
-        energy = data.load_fred(["DCOILWTICO", "DCOILBRENTEU", "DHHNGSP"], start="1988-01-01", end=END)
-        treasury = data.load_fred(["DGS10"], start=START, end=END)["DGS10"]
-        universe = pd.concat([(1.0 / fx).rename(columns=lambda c: f"{c} (in EUR)"),
-                              energy.loc[START:].where(energy > 0).rename(columns={"DCOILWTICO": "WTI", "DCOILBRENTEU": "Brent",
-                                                                                   "DHHNGSP": "Henry Hub"}),
-                              data.treasury_total_return_index(treasury).rename("UST 10Y TR")], axis=1, sort=True)
-        pair = energy[["DCOILWTICO", "DCOILBRENTEU"]].dropna().rename(columns={"DCOILWTICO": "WTI", "DCOILBRENTEU": "Brent"})
+        universe = data.load_momentum_universe(START, END)
+        pair = data.load_wti_brent("1988-01-01", END)
         source = "Source: ECB euro reference rates; EIA spot prices and Federal Reserve H.15 yields via FRED"
     else:
         universe = synthetic.trending_prices(n=7000, n_assets=8, start=START)

@@ -356,7 +356,7 @@ Everything else (variances by FFT, recentring, stepdown, block length) is vector
 
 1. [Futures, rolls and carry](../futures/futures_rolls_and_carry.md): tradable returns.
 2. **Data snooping and multiple testing** (this note): honest inference about those returns.
-3. Portfolio construction and risk (planned): combining strategies that survive step 2.
+3. [Portfolio construction under estimation error](../portfolio/portfolio_construction.md): combining assets or strategies, and testing the combination against 1/N with the tools of this note.
 4. Execution and market impact (planned).
 
 ## 15. Fundamentals first: self-check

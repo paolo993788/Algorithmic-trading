@@ -24,6 +24,7 @@ IS_END_MOMENTUM, IS_END_PAIRS = "2012-12-31", "2009-12-31"
 LOOKBACK, COM, ASSET_VOL, MAX_LEVERAGE, COST, LAG, WARMUP = 252, 60.0, 0.40, 5.0, 0.0005, 1, 300
 ENTRY, EXIT, STOP, COST_PAIRS, BURN_IN, Z_HALFLIFE = 2.0, 0.5, 4.0, 0.02, 60, 60
 FUND_START, EVAL_START, SLEEVE_VOL, DD_LEVELS, DD_WINDOW = "2010-01-01", "2013-01-01", 0.10, ((0.10, 0.5), (0.20, 0.25)), 252
+PORTFOLIO_EVAL_START = "2003-10-02"   # first day on which all 96 configurations of the portfolio notebook are invested
 
 
 def load(official=True) -> dict:
@@ -211,10 +212,59 @@ def fx_styles(t, d):
     return fig
 
 
+def load_portfolio(official=True) -> dict:
+    """Main setting of the portfolio-construction notebook for five of its eight rules: 504-day window, month-end
+    decisions traded the next day, assumed costs, 10% ex-ante volatility with a leverage cap of 10."""
+    from . import allocation as al, covariance as cv, rebalance as rb, universes as un
+
+    returns = un.load_multi_asset_excess_returns() if official else un.synthetic_multi_asset()
+    costs = pd.Series(un.ASSUMED_COST_BP)[returns.columns].to_numpy() / 1e4
+
+    def lw(window):
+        return cv.ledoit_wolf(window)[0]
+
+    rules = {"1/N": lambda w, c: al.equal_weight(w.shape[1]), "ERC": lambda w, c: al.risk_budget(lw(w)),
+             "Minimum variance": lambda w, c: al.minimum_variance(lw(w)),
+             "Maximum diversification": lambda w, c: al.maximum_diversification(lw(w)),
+             "Maximum Sharpe": lambda w, c: al.maximum_sharpe(w.mean(axis=0), cv.sample_covariance(w))}
+    net = pd.DataFrame({name: rb.walk_forward_allocation(returns, f, lookback=504, frequency="ME", lag=1, cost=costs,
+                                                         target_vol=0.10, max_leverage=10.0)["daily"]["net"]
+                        for name, f in rules.items()})
+    source = ("Source: Federal Reserve H.15 and H.10, Nasdaq, Nikkei, OECD (FRED); portfolio construction notebook"
+              if official else "Simulated multi-asset returns, not market data")
+    return {"portfolio": net.loc[PORTFOLIO_EVAL_START:], "source": source}
+
+
+def portfolio_rules(t, d):
+    r = d["portfolio"]
+    growth = (1 + r).cumprod()
+    fig, ax = new_figure(t)
+    fig.subplots_adjust(right=0.72)
+    names = list(r.columns)
+    colors = {"1/N": t["muted"], **{n: t["series"][k] for k, n in enumerate(names[1:])}}
+    shock = (pd.Timestamp("2022-01-03"), pd.Timestamp("2022-10-14"))
+    ax.axvspan(*shock, color=t["axis"], alpha=0.25, lw=0)
+    for name in names:
+        ax.plot(growth.index, growth[name], color=colors[name], lw=1.9 if name == "1/N" else 1.4)
+    ax.annotate("2022", (shock[0] + (shock[1] - shock[0]) / 2, ax.get_ylim()[0]), xytext=(0, 4),
+                textcoords="offset points", ha="center", va="bottom", fontsize=8, color=t["ink2"])
+    ends = [growth[n].iloc[-1] for n in names]
+    offsets = label_offsets(ax, ends)
+    for name, end, dy in zip(names, ends, offsets):
+        end_label(ax, t, growth.index[-1], end, f"{name}: Sharpe {mt.sharpe_ratio(r[name]):.2f}", colors[name], dy=dy)
+    ax.axhline(1, color=t["axis"], lw=1)
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v:.1f}")
+    header(fig, t, "No allocation rule is shown to beat 1/N, and all lost 30-45% in 2022",
+           f"Growth of 1 from {r.index[0]:%B %Y}: 11 futures-like assets, monthly walk-forward, 10% ex-ante volatility, "
+           "after assumed costs",
+           d["source"])
+    return fig
+
+
 FIGURES = {"fund_growth": (fund_growth, "main"), "momentum_overfitting": (overfitting, "main"),
            "pairs_variants": (pairs_variants, "main"), "volatility_target": (vol_target, "main"),
-           "fx_styles": (fx_styles, "fx")}
-LOADERS = {"main": load, "fx": load_fx}
+           "fx_styles": (fx_styles, "fx"), "portfolio_rules": (portfolio_rules, "portfolio")}
+LOADERS = {"main": load, "fx": load_fx, "portfolio": load_portfolio}
 
 
 def main(argv=None):

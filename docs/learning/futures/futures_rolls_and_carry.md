@@ -387,8 +387,8 @@ Report both.
 This note is step 1 of the systematic-trading track in [`docs/learning/README.md`](../README.md):
 
 1. **Futures, rolls and carry** (this note): tradable returns.
-2. Statistical validation of strategies: Reality Check, SPA, Romano-Wolf, purged cross-validation (planned).
-3. Portfolio construction and risk: covariance estimation, risk parity, constraints, costs (planned).
+2. [Statistical validation of strategies](../statistics/data_snooping_and_multiple_testing.md): Reality Check, SPA, Romano-Wolf, purged cross-validation.
+3. [Portfolio construction under estimation error](../portfolio/portfolio_construction.md): covariance shrinkage, risk budgeting, Euler risk decomposition, walk-forward rebalancing with costs.
 4. Execution and market impact (planned).
 
 Each later note assumes the timing convention and return definitions established here.

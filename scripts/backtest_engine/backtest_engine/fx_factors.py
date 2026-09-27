@@ -186,7 +186,7 @@ def uip_regressions(spot: pd.DataFrame, rates: pd.DataFrame, base="EUR", lags=6)
     premium puzzle is beta < 1 (often negative): high-rate currencies do not depreciate enough to offset carry."""
     ds = np.log(spot).diff().shift(-1)
     fp = (-carry_signal(rates, spot.columns, base)) / 1200.0
-    rows, ys, xs, ds_list = {}, [], [], []
+    rows, ys, xs = {}, [], []
     for c in spot.columns:
         ok = ds[c].notna() & fp[c].notna()
         res = newey_west_regression(ds[c][ok].to_numpy(), fp[c][ok].to_numpy(), lags)

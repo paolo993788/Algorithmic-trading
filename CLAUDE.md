@@ -22,7 +22,7 @@ Repository of scripts and notebooks on algorithmic trading: strategy research, b
 - Fix and document the random seed of every simulation or bootstrap.
 - Commit market data only when its license allows redistribution; otherwise, provide a download script and document the source.
 - Run the relevant available checks and report the actual commands and outcomes. Never state that tests passed if they were not run.
-- There is no general test command or CI workflow yet; each project documents its own checks.
+- CI (`.github/workflows/ci.yml`) runs lint (`ruff check --select F scripts tests`), `python -m pytest tests/backtest_engine`, the standalone C++ tests (with sanitizers) and every notebook offline on synthetic data; run the relevant checks locally before pushing, and each project documents its own additional checks.
 - Update the catalogue in the main README whenever you add a script or notebook.
 
 ## Publishing

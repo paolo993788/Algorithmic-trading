@@ -511,7 +511,7 @@ def load_eia_nearby(root: str, api_key: str | None = None, refresh: bool = False
     documentation; the parser is tested on that response format, but the download itself has not yet been exercised
     from the development environment (api.eia.gov was not reachable there), so check the first download.
     """
-    from .data import cache_dir, USER_AGENT          # local import keeps this module usable without network code
+    from .data import USER_AGENT, cache_dir, record_vintage   # local import: this module works without network code
 
     route, series_ids = EIA_SERIES[root]
     api_key = api_key or os.environ.get("EIA_API_KEY")
@@ -535,6 +535,7 @@ def load_eia_nearby(root: str, api_key: str | None = None, refresh: bool = False
                     break
                 offset += page
             path.write_text(json.dumps({"response": {"data": records}}), encoding="utf-8")
+            record_vintage(path, url)                  # the API key is redacted from the recorded URL
         columns[k] = parse_eia_v2(path.read_text(encoding="utf-8"))
     panel = pd.DataFrame(columns)
     panel.attrs["source"] = (f"EIA, NYMEX futures settlement prices, contracts 1-4 ({', '.join(series_ids)}); "

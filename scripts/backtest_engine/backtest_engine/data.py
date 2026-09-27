@@ -18,16 +18,24 @@ Sources:
   foreign currency per euro; reuse permitted with acknowledgement.
 
 Files are cached in ``data/raw/`` (ignored by Git); set
-``BACKTEST_ENGINE_DATA_DIR`` to use another folder. Command line:
+``BACKTEST_ENGINE_DATA_DIR`` to use another folder. Official series are revised and extended after publication, so
+every download also writes a vintage record next to the file (``<file>.vintage.json``: retrieval time in UTC, source
+URL with any API key removed, size and SHA-256 of the bytes). ``cache_manifest()`` lists the records, so that a result
+can be tied to the exact data it was computed from. Command line:
 
     python -m backtest_engine.data --fred DCOILWTICO DCOILBRENTEU --ecb-fx
+    python -m backtest_engine.data --manifest
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
+import hashlib
 import io
+import json
 import os
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -62,6 +70,32 @@ def cache_dir(source: str) -> Path:
     return path
 
 
+SECRET_QUERY_KEYS = {"api_key", "apikey", "key", "token", "access_token"}
+VINTAGE_SUFFIX = ".vintage.json"
+
+
+def redact_url(url: str) -> str:
+    """The URL with the values of credential-like query parameters (api_key, token, ...) replaced by '***'."""
+    parts = urllib.parse.urlsplit(url)
+    query = [(k, "***" if k.lower() in SECRET_QUERY_KEYS else v)
+             for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)]
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query, safe="*[]")))
+
+
+def vintage_path(path: Path) -> Path:
+    return path.with_name(path.name + VINTAGE_SUFFIX)
+
+
+def record_vintage(path: Path, url: str, retrieved: dt.datetime | None = None) -> dict:
+    """Write the vintage record of a cached file: retrieval time (UTC), redacted source URL, size and SHA-256."""
+    payload = Path(path).read_bytes()
+    retrieved = retrieved or dt.datetime.now(dt.timezone.utc)
+    record = {"file": Path(path).name, "url": redact_url(url), "retrieved_utc": retrieved.isoformat(timespec="seconds"),
+              "bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+    vintage_path(Path(path)).write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+    return record
+
+
 def download(url: str, destination: Path, timeout: float = 60.0) -> Path:
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -69,7 +103,33 @@ def download(url: str, destination: Path, timeout: float = 60.0) -> Path:
     tmp = destination.with_suffix(destination.suffix + ".part")
     tmp.write_bytes(payload)
     tmp.replace(destination)
+    record_vintage(destination, url)
     return destination
+
+
+def cache_manifest(sources=("fred", "ecb", "eia")) -> pd.DataFrame:
+    """One row per cached data file: source, retrieval time, size, SHA-256 and whether the file still matches its
+    vintage record. Files downloaded before vintages were recorded show the file's modification time instead
+    (`recorded` False)."""
+    rows = []
+    for source in sources:
+        folder = cache_dir(source)
+        for path in sorted(p for p in folder.iterdir() if p.is_file() and not p.name.endswith((VINTAGE_SUFFIX, ".part"))):
+            payload = path.read_bytes()
+            digest = hashlib.sha256(payload).hexdigest()
+            meta = vintage_path(path)
+            if meta.exists():
+                record = json.loads(meta.read_text(encoding="utf-8"))
+                rows.append({"source": source, "file": path.name, "retrieved_utc": record["retrieved_utc"],
+                             "recorded": True, "matches_record": record["sha256"] == digest, "bytes": len(payload),
+                             "sha256": digest[:16]})
+            else:
+                modified = dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc)
+                rows.append({"source": source, "file": path.name,
+                             "retrieved_utc": modified.isoformat(timespec="seconds"), "recorded": False,
+                             "matches_record": None, "bytes": len(payload), "sha256": digest[:16]})
+    return pd.DataFrame(rows, columns=["source", "file", "retrieved_utc", "recorded", "matches_record", "bytes",
+                                       "sha256"])
 
 
 def parse_fred_csv(text: str) -> pd.Series:
@@ -168,6 +228,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Download official data into the local cache.")
     parser.add_argument("--fred", nargs="*", default=[], help="FRED series identifiers")
     parser.add_argument("--ecb-fx", action="store_true", help="ECB euro foreign exchange reference rates")
+    parser.add_argument("--manifest", action="store_true", help="list cached files with their vintage records")
     args = parser.parse_args(argv)
     if args.fred:
         frame = load_fred(args.fred, refresh=True)
@@ -175,7 +236,9 @@ def main(argv=None):
     if args.ecb_fx:
         rates = load_ecb_fx_rates(refresh=True)
         print(f"ECB: {rates.index.min().date()} to {rates.index.max().date()}")
-    if not (args.fred or args.ecb_fx):
+    if args.manifest:
+        print(cache_manifest().to_string(index=False))
+    if not (args.fred or args.ecb_fx or args.manifest):
         parser.print_help()
 
 

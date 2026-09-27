@@ -9,7 +9,10 @@ A C++17 library exposed to Python with pybind11 for researching systematic strat
   - Windows: Visual Studio 2019 or later, or the free *Build Tools for Visual Studio* with the "Desktop development with C++" workload;
   - macOS: Xcode Command Line Tools (`xcode-select --install`);
   - Linux: GCC 9 or later, or Clang 10 or later.
-- Python dependencies: [`requirements.txt`](requirements.txt) (NumPy, SciPy, pandas, Matplotlib, pybind11, pytest, ipykernel). If `statsmodels` is installed, one test also cross-checks the ADF and Engle-Granger statistics against it; it is not required.
+- Python dependencies: [`requirements.txt`](requirements.txt) (NumPy, SciPy, pandas, Matplotlib, pybind11, pytest, ipykernel).
+- Development tools: [`requirements-dev.txt`](requirements-dev.txt): ruff, nbconvert, and statsmodels and scikit-learn as reference implementations for cross-check tests, which are skipped without them.
+- Exact versions: [`requirements-lock.txt`](requirements-lock.txt) pins the two files above to versions that pass the test suite and execute every notebook (Python 3.11, Linux). CI installs it on Python 3.11 and the unpinned files on 3.10 and 3.12.
+- For the standalone C++ tests and benchmarks: CMake 3.16 or later (Ninja optional).
 
 ## Usage
 
@@ -22,7 +25,7 @@ python -m pip install -r scripts/backtest_engine/requirements.txt
 python -m pip install -e scripts/backtest_engine
 ```
 
-The last command compiles `cpp/bindings.cpp` into `backtest_engine._core`. Run it again after editing any C++ file.
+For the exact environment used by CI, install `requirements-lock.txt` instead of `requirements.txt`. The last command compiles `cpp/bindings.cpp` into `backtest_engine._core`. Run it again after editing any C++ file.
 
 ### Visual Studio Code
 
@@ -35,7 +38,15 @@ The last command compiles `cpp/bindings.cpp` into `backtest_engine._core`. Run i
 
 ```bash
 python -m pytest tests/backtest_engine                                              # validation suite
+ruff check --select F scripts tests                                                 # lint (pyflakes rules)
 python -m backtest_engine.data --fred DCOILWTICO DCOILBRENTEU DHHNGSP DGS10 --ecb-fx   # optional pre-download
+python -m backtest_engine.data --manifest                                           # cached files and their vintages
+
+# Standalone C++ tests (strict warnings; add -DBT_SANITIZE=address,undefined or =thread) and benchmarks
+cmake -S scripts/backtest_engine/cpp -B build/cpp -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build/cpp && ctest --test-dir build/cpp --output-on-failure
+cmake -S scripts/backtest_engine/cpp -B build/cpp-release -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build/cpp-release && build/cpp-release/core_bench
 ```
 
 ### Notebooks
@@ -65,7 +76,15 @@ Official data are downloaded by default. Set `BACKTEST_ENGINE_DATA_MODE=syntheti
 | FRED `DGS2`, `DGS30`, `DTB3`, `NASDAQCOM`, `NIKKEI225`, `DEXUSEU`, `DEXUSUK`, `DEXJPUS`, `DEXSZUS`, `DEXCAUS`, `DEXUSAL` | CSV | Multi-asset universe (`universes.load_multi_asset_excess_returns`): 2- and 30-year Treasury yields and the 3-month T-bill (Federal Reserve H.15), Nasdaq Composite and Nikkei 225 price indices, noon exchange rates (Federal Reserve H.10). The two equity indices are copyrighted by their publishers: they are cached locally and never committed. |
 | Contract CSV (optional) | CSV with columns `date`, `contract`, `settle` | Licensed contract-level settlements (for example exported from a broker); read by `futures.load_contract_csv`, never committed. |
 
-Downloads are cached in `data/raw/fred/`, `data/raw/ecb/` and `data/raw/eia/`, which Git ignores; `BACKTEST_ENGINE_DATA_DIR` changes the cache folder. EIA and Federal Reserve data are in the public domain and ECB statistics may be reused with acknowledgement; the data are downloaded rather than committed so that their source and vintage remain explicit.
+Downloads are cached in `data/raw/fred/`, `data/raw/ecb/` and `data/raw/eia/`, which Git ignores; `BACKTEST_ENGINE_DATA_DIR` changes the cache folder.
+
+**Data vintages.** Official series are revised and extended after publication, so every download also writes `<file>.vintage.json` next to the cached file:
+
+- retrieval time in UTC;
+- source URL, with API keys and tokens replaced by `***`;
+- size and SHA-256 of the bytes.
+
+`data.cache_manifest()` (or `python -m backtest_engine.data --manifest`) lists every cached file with its vintage. It flags files that no longer match their record, and files cached before vintages were recorded; for those it shows the file's modification time. EIA and Federal Reserve data are in the public domain and ECB statistics may be reused with acknowledgement; the data are downloaded rather than committed so that their source and vintage remain explicit.
 
 ## Outputs
 
@@ -141,7 +160,7 @@ Downloads are cached in `data/raw/fred/`, `data/raw/ecb/` and `data/raw/eia/`, w
 
 ## Verification
 
-Run `python -m pytest tests/backtest_engine` from the repository root (111 tests, about 15 seconds). Main checks:
+Run `python -m pytest tests/backtest_engine` from the repository root (113 tests, about 15 seconds). Main checks:
 
 | Check | Tolerance and justification |
 | --- | --- |
@@ -204,6 +223,67 @@ Run `python -m pytest tests/backtest_engine` from the repository root (111 tests
 | Euler contributions sum to the total; Gaussian ES at 97.5% equals $2.338\sigma_p$ and its shares equal the volatility shares (40,000 scenarios) | relative $10^{-12}$; 3% |
 | Walk-forward rebalancing: decision on the window ending at the decision date, trade at $d$ + lag, first return the day after, incomplete last month dropped; drift, turnover and per-asset costs; identical assets trade once; exact ex-ante volatility target and leverage cap; break-even multiple | exact; $10^{-12}$; $10^{-10}$ |
 | No look-ahead in rebalancing: shocking returns after a date leaves earlier targets and daily results unchanged (also on the real data in the notebook) | exact equality |
+
+## C++ unit tests, sanitizers and benchmarks
+
+**Tests.** The engines are header-only, so [`cpp/CMakeLists.txt`](cpp/CMakeLists.txt) also compiles them without Python. It uses `-Wall -Wextra -Wpedantic -Wshadow -Wold-style-cast -Wnull-dereference -Wdouble-promotion -Werror` (`/W4 /WX` with MSVC) and bounds-checked standard containers outside Release builds. [`cpp/tests/test_core.cpp`](cpp/tests/test_core.cpp) runs 4,009 checks without any test framework:
+
+| Check | Tolerance |
+| --- | --- |
+| SplitMix64 and xoshiro256** against the published reference outputs | exact |
+| Uniform and normal variates: range, mean, variance, 5% two-sided tail frequency (10^6 draws) | 4 standard errors |
+| `parallel_for`: same result for 1, 3 and 8 threads; an exception in a task is rethrown; zero tasks | exact |
+| Kalman filter against the textbook 2 x 2 matrix recursion (predictions, errors, variances, filtered states, log-likelihood) | relative $10^{-9}$ |
+| Kalman filter without state noise equals ordinary least squares; missing observations; argument validation | $10^{-6}$; exact |
+| Pairs trading rules (entry, exit, stop-loss, block until \|z\| < entry), execution lag and P&L accounting with costs | exact; $10^{-12}$ |
+| Momentum: return = held weights x returns - cost x turnover, gross exposure within the leverage cap, lag shifts weights only, grid = single backtests | $10^{-12}$; exact |
+| Stationary bootstrap: identical for 1 and 4 threads, replicate means = means of the index stream, block-start rate $1/L$, $L = 1$ i.i.d., huge $L$ circular | exact; 4 standard errors |
+| CSCV: number of combinations, PBO 0 for a dominant strategy, thread invariance, argument validation | exact |
+
+**Mutation check.** Five deliberate bugs were injected, one per engine, and each makes the suite fail:
+
+- the sign of the momentum cost;
+- the continuation of a bootstrap block;
+- a pairs exit threshold;
+- the Kalman state-noise variance (tenfold);
+- the scaling of uniform variates.
+
+The Kalman bug was missed until the matrix-form test was added: the least-squares test uses a state-noise variance of $10^{-15}$.
+
+**Sanitizers.** The same tests pass under two sanitizer builds:
+
+- AddressSanitizer with UndefinedBehaviorSanitizer (`-DBT_SANITIZE=address,undefined`): out-of-bounds access, use after free, signed overflow and similar;
+- ThreadSanitizer (`-DBT_SANITIZE=thread`): data races in the parallel grids and bootstraps.
+
+CI runs both, plus GCC and Clang builds with warnings as errors.
+
+**Benchmarks.** [`cpp/bench/bench_core.cpp`](cpp/bench/bench_core.cpp) times each kernel at the sizes used by the notebooks (median of 5 runs, Release build, `-O3`). Measured on a 4-thread Intel Xeon at 2.8 GHz with GCC 13.3 (September 2026):
+
+| Kernel | Size | 1 thread | 4 threads | Speed-up |
+| --- | --- | --- | --- | --- |
+| `kalman_regression` | 9,500 observations | 0.29 ms | | |
+| `pairs_grid` | 9,500 observations x 56 configurations | 6.2 ms | 5.7 ms | 1.1 |
+| `tsmom_grid` | 6,700 days x 8 assets x 104 configurations | 72 ms | 24 ms | 3.0 |
+| `stationary_bootstrap_means` | 6,692 x 104, 5,000 replicates | 1,479 ms | 368 ms | 4.0 |
+| `cscv` | 3,000 x 104, 16 blocks (12,870 combinations) | 35 ms | 12 ms | 2.8 |
+
+Reading the table:
+
+- **The bootstrap scales perfectly** because replicates are independent and each reads rows contiguously. It is the only kernel slow enough to matter: $3.5\times10^9$ additions in 0.37 s.
+- **The pairs grid barely gains from threads.** Each of its 56 backtests takes about 0.1 ms, so starting the threads costs as much as the work. Parallelism there would only pay for much larger grids.
+- **Priorities for optimisation are set by these measurements, not by guesswork.** Every kernel already runs faster than the Python code that calls it, so none is a current optimisation target.
+
+`ctest` also runs `core_bench --quick` as a smoke test; its timings are not meaningful.
+
+## Continuous integration
+
+[`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It needs no credentials and downloads no market data. Its jobs:
+
+1. **Python:** lint (ruff, pyflakes rules) and the test suite, on Python 3.11 with the locked versions and on 3.10 and 3.12 with the newest allowed versions.
+2. **C++:** the standalone tests with GCC and Clang (warnings as errors), and with GCC under ASan/UBSan and under TSan.
+3. **Notebooks:** every Python notebook executed offline on synthetic data. The job checks that the data cache stays empty, i.e. that synthetic mode does not touch the network.
+
+The notebook job has already found one bug: in synthetic mode a configuration that never trades has a constant return series. The dependence table of the data-snooping notebook then failed on a correlation matrix with NaN entries. Such configurations are now excluded, as `SnoopingTest` already did, and counted in a new "never traded" column (0 on official data, where every other output reproduced exactly).
 
 ## References
 

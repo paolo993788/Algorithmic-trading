@@ -1,0 +1,5 @@
+# Development and CI tools for scripts/backtest_engine, on top of requirements.txt.
+ruff>=0.5            # lint (pyflakes rules, which honour "noqa")
+nbconvert>=7.0       # executes the notebooks in the CI smoke test
+statsmodels>=0.14    # reference implementation for the ADF cross-check (otherwise skipped)
+scikit-learn>=1.3    # reference implementation for the Ledoit-Wolf cross-check (otherwise skipped)

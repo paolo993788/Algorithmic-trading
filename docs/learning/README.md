@@ -23,7 +23,8 @@ The notes are cumulative: later notes assume the conventions of earlier ones.
 | 1 | [Futures, rolls and carry: from contract prices to tradable returns](futures/futures_rolls_and_carry.md) | `backtest_engine.futures`, `backtest_engine.schwartz_smith` | available |
 | 2 | [Data snooping and multiple testing: inference after a search](statistics/data_snooping_and_multiple_testing.md) | `backtest_engine.validation`, `backtest_engine.cross_validation`, C++ joint bootstrap | available |
 | 3 | [Portfolio construction under estimation error: covariance shrinkage, risk budgeting and walk-forward rebalancing](portfolio/portfolio_construction.md) | `backtest_engine.covariance`, `backtest_engine.allocation`, `backtest_engine.rebalance`, `backtest_engine.universes` | available |
-| 4 | Execution and market impact: TWAP/VWAP, implementation shortfall, Almgren-Chriss | planned | planned |
+| 4 | [Bar strategies and platform export: intrabar fills, order plans and parity with NinjaTrader](execution/bar_strategies_and_platform_export.md) | `backtest_engine.bars`, `backtest_engine.ninjatrader`, C++ bar engine | available |
+| 5 | Execution and market impact: TWAP/VWAP, implementation shortfall, Almgren-Chriss | planned | planned |
 
 ## How to use a note
 

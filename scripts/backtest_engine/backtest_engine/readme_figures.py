@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import data, fx_factors as fx, metrics as mt, portfolio as pf, strategies as st, synthetic
+from . import bars as bl, data, fx_factors as fx, metrics as mt, portfolio as pf, strategies as st, synthetic
 from .figstyle import end_label, header, label_offsets, new_figure, percent_axis, render
 
 START, END = "1999-01-04", "2025-12-31"
@@ -25,6 +25,7 @@ LOOKBACK, COM, ASSET_VOL, MAX_LEVERAGE, COST, LAG, WARMUP = 252, 60.0, 0.40, 5.0
 ENTRY, EXIT, STOP, COST_PAIRS, BURN_IN, Z_HALFLIFE = 2.0, 0.5, 4.0, 0.02, 60, 60
 FUND_START, EVAL_START, SLEEVE_VOL, DD_LEVELS, DD_WINDOW = "2010-01-01", "2013-01-01", 0.10, ((0.10, 0.5), (0.20, 0.25)), 252
 PORTFOLIO_EVAL_START = "2003-10-02"   # first day on which all 96 configurations of the portfolio notebook are invested
+CALENDAR_IS_END, CALENDAR_COST_BP = "2000-12-31", 5.0   # turn-of-month study: in sample to 2000, 5 bp per unit of turnover
 
 
 def load(official=True) -> dict:
@@ -261,10 +262,61 @@ def portfolio_rules(t, d):
     return fig
 
 
+def load_calendar(official=True) -> dict:
+    """Turn-of-the-month rule of the bar-strategies notebook on the Nasdaq Composite closes (bars whose open is the
+    previous close, long from the second-last close of the month to the third close of the next one, net of costs)."""
+    if official:
+        close = data.load_fred(["NASDAQCOM"], start="1971-02-05", end=END)["NASDAQCOM"].dropna()
+        name, source = "Nasdaq Composite", "Source: Nasdaq Composite Index via FRED; bar-strategies notebook"
+    else:
+        close = synthetic.daily_bars(n=6500, start="2000-01-03", seed=20260929)["close"]
+        name, source = "Simulated index", "Simulated prices, not market data"
+    index_bars = bl.bars_from_closes(close)
+    result = bl.run(index_bars, bl.turn_of_month_plan(index_bars, bl.INSTRUMENTS["index"], 1, 3), bl.INSTRUMENTS["index"])
+    turnover = result.position.diff().abs().fillna(0.0)
+    rule = (result.pnl / index_bars["close"].shift(1) - CALENDAR_COST_BP * 1e-4 * turnover).fillna(0.0)
+    held = result.position.shift(1).fillna(0.0) != 0
+    buy_hold = close.pct_change().fillna(0.0)
+    return {"calendar": pd.DataFrame({"Turn-of-month days": rule, "All other days": buy_hold.where(~held, 0.0),
+                                      "Buy and hold": buy_hold}), "held": held, "name": name, "source": source}
+
+
+def turn_of_month(t, d):
+    r = d["calendar"]
+    growth = (1 + r).cumprod()
+    fig, ax = new_figure(t)
+    fig.subplots_adjust(right=0.74)
+    names = list(r.columns)
+    colors = {names[0]: t["series"][0], names[1]: t["series"][1], names[2]: t["muted"]}
+    for name in names:
+        ax.plot(growth.index, growth[name], color=colors[name], lw=1.9 if name == names[0] else 1.4)
+    ax.set_yscale("log")
+    split = pd.Timestamp(CALENDAR_IS_END) + pd.Timedelta(days=1)
+    ax.axvline(split, color=t["axis"], lw=1, ls=(0, (4, 3)))
+    ax.annotate("out of sample", (split, ax.get_ylim()[1]), xytext=(4, -4), textcoords="offset points", va="top",
+                fontsize=8, color=t["ink2"])
+    ends = [growth[n].iloc[-1] for n in names]
+    offsets = label_offsets(ax, ends)
+    for name, end, dy in zip(names, ends, offsets):
+        before, after = r[name].loc[:CALENDAR_IS_END], r[name].loc[split:]
+        end_label(ax, t, growth.index[-1], end, f"{name}: Sharpe {mt.sharpe_ratio(before):.2f} / {mt.sharpe_ratio(after):.2f}",
+                  colors[name], dy=dy)
+    share_days = float(d["held"].mean())
+    share_growth = float(np.log(ends[0]) / (np.log(ends[0]) + np.log(ends[1])))
+    ax.axhline(1, color=t["axis"], lw=1)
+    ax.yaxis.set_major_formatter(lambda v, _: f"{v:g}")
+    header(fig, t, f"Four days a month gave {share_growth:.0%} of the {d['name']}'s growth since {growth.index[0]:%Y}, mostly before 2001",
+           f"Growth of 1 (log scale): turn-of-month days ({share_days:.0%} of days, after costs), all other days, buy and hold; "
+           f"Sharpe to 2000 / since 2001",
+           d["source"])
+    return fig
+
+
 FIGURES = {"fund_growth": (fund_growth, "main"), "momentum_overfitting": (overfitting, "main"),
            "pairs_variants": (pairs_variants, "main"), "volatility_target": (vol_target, "main"),
-           "fx_styles": (fx_styles, "fx"), "portfolio_rules": (portfolio_rules, "portfolio")}
-LOADERS = {"main": load, "fx": load_fx, "portfolio": load_portfolio}
+           "fx_styles": (fx_styles, "fx"), "portfolio_rules": (portfolio_rules, "portfolio"),
+           "turn_of_month": (turn_of_month, "calendar")}
+LOADERS = {"main": load, "fx": load_fx, "portfolio": load_portfolio, "calendar": load_calendar}
 
 
 def main(argv=None):

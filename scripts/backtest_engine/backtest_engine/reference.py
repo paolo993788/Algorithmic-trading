@@ -185,3 +185,169 @@ def tsmom_ensemble_backtest(prices, lookbacks, com, target_vol, max_leverage, co
     turnover = np.zeros(n); turnover[1:] = np.abs(np.diff(held, axis=0)).sum(axis=1)
     returns = np.zeros(n); returns[1:] = (held[:-1] * r_all[1:]).sum(axis=1) - cost * turnover[1:]
     return {"returns": returns, "turnover": turnover, "weights": held}
+
+
+def bar_backtest(open_, high, low, close, session, plan, inst):
+    """Loop-by-loop transcription of ``bt::bar_backtest`` (cpp/bars.hpp); `plan` and `inst` are the dictionaries
+    passed to the C++ binding."""
+    O_, H_, L_, C_ = (np.asarray(v, dtype=float) for v in (open_, high, low, close))
+    n = O_.size
+    has = np.isfinite
+    slip = inst["slippage_ticks"] * inst["tick_size"]
+    touch_limit = inst["limit_on_touch"]
+    pnl, position, trades = np.zeros(n), np.zeros(n, dtype=int), []
+    state = {"pos": 0, "entry_price": 0.0, "entry_bar": 0, "offset": np.nan, "mae": 0.0, "mfe": 0.0,
+             "cash": 0.0, "commission": 0.0, "fills": 0}
+
+    def side_of(p):
+        return 1 if p > 0 else (-1 if p < 0 else 0)
+
+    def touch(price):
+        if state["pos"] == 0:
+            return
+        s = side_of(state["pos"])
+        state["mfe"] = max(state["mfe"], s * (price - state["entry_price"]))
+        state["mae"] = max(state["mae"], s * (state["entry_price"] - price))
+
+    def close_trade(t, price, reason):
+        s, qty = side_of(state["pos"]), abs(state["pos"])
+        touch(price)
+        commission = 2.0 * qty * inst["commission"]
+        trades.append({"entry_bar": state["entry_bar"], "exit_bar": t, "side": s, "qty": qty,
+                       "entry_price": state["entry_price"], "exit_price": price,
+                       "pnl": s * qty * (price - state["entry_price"]) * inst["point_value"] - commission,
+                       "commission": commission, "mae": state["mae"], "mfe": state["mfe"], "exit_reason": reason})
+        state["cash"] += state["pos"] * price
+        state["commission"] += qty * inst["commission"]
+        state["fills"] += 1
+        state.update(pos=0, offset=np.nan, mae=0.0, mfe=0.0)
+
+    def open_trade(t, price, side, qty, stop_offset):
+        state.update(pos=side * qty, entry_price=price, entry_bar=t, offset=stop_offset, mae=0.0, mfe=0.0)
+        state["cash"] -= state["pos"] * price
+        state["commission"] += qty * inst["commission"]
+        state["fills"] += 1
+
+    def enter(t, price, side, qty, stop_offset):
+        if state["pos"] != 0 and side_of(state["pos"]) != side:
+            close_trade(t, price, 5)
+        if state["pos"] == 0:
+            open_trade(t, price, side, qty, stop_offset)
+
+    for t in range(1, n):
+        d = t - 1
+        O, H, L, C = O_[t], H_[t], L_[t], C_[t]
+        pos_start = state["pos"]
+        state["cash"] = state["commission"] = 0.0
+        lt, st = int(plan["long_type"][d]), int(plan["short_type"][d])
+        lp, sp = float(plan["long_price"][d]), float(plan["short_price"][d])
+        lq, sq = int(plan["long_qty"][d]), int(plan["short_qty"][d])
+        if state["pos"] > 0:
+            lt = 0
+        if state["pos"] < 0:
+            st = 0
+        levels = {"stop": np.nan, "target": np.nan}
+
+        def arm():
+            levels["stop"] = levels["target"] = np.nan
+            pos, off, ep = state["pos"], state["offset"], state["entry_price"]
+            if pos == 0:
+                return
+            price_stop = plan["long_stop"][d] if pos > 0 else plan["short_stop"][d]
+            offset_stop = ep - off if pos > 0 else ep + off
+            if state["entry_bar"] == t:
+                s = offset_stop if has(off) else price_stop
+            elif has(off) and has(price_stop):
+                s = max(price_stop, offset_stop) if pos > 0 else min(price_stop, offset_stop)
+            else:
+                s = offset_stop if has(off) else price_stop
+            levels["stop"], levels["target"] = s, (plan["long_target"][d] if pos > 0 else plan["short_target"][d])
+
+        def gap_check():
+            s, g = levels["stop"], levels["target"]
+            if state["pos"] > 0:
+                if has(s) and O <= s:
+                    close_trade(t, O - slip, 1)
+                elif has(g) and (O >= g if touch_limit else O > g):
+                    close_trade(t, O, 2)
+            elif state["pos"] < 0:
+                if has(s) and O >= s:
+                    close_trade(t, O + slip, 1)
+                elif has(g) and (O <= g if touch_limit else O < g):
+                    close_trade(t, O, 2)
+
+        arm()
+        if (state["pos"] > 0 and plan["long_exit"][d]) or (state["pos"] < 0 and plan["short_exit"][d]):
+            close_trade(t, O - side_of(state["pos"]) * slip, 3)
+        gap_check()
+        touch(O)
+        if lt == 1 or (lt == 2 and O >= lp) or (lt == 3 and (O <= lp if touch_limit else O < lp)):
+            enter(t, O if lt == 3 else O + slip, 1, lq, plan["long_stop_offset"][d])
+            lt = 0
+            arm()
+            gap_check()
+        if st == 1 or (st == 2 and O <= sp) or (st == 3 and (O >= sp if touch_limit else O > sp)):
+            enter(t, O if st == 3 else O - slip, -1, sq, plan["short_stop_offset"][d])
+            st = 0
+            arm()
+            gap_check()
+
+        high_first = (H - O) < (O - L)
+        pivots = [O, H if high_first else L, L if high_first else H, C]
+        for seg in range(3):
+            a, b = pivots[seg], pivots[seg + 1]
+            if a == b:
+                continue
+            up = b > a
+            cur = a
+            while True:
+                candidates = []
+                pos, s, g = state["pos"], levels["stop"], levels["target"]
+                if pos > 0:
+                    if not up and has(s) and s >= b:
+                        candidates.append((cur - s, 0, s))
+                    if up and has(g) and (g <= b if touch_limit else g < b):
+                        candidates.append((g - cur, 1, g))
+                elif pos < 0:
+                    if up and has(s) and s <= b:
+                        candidates.append((s - cur, 0, s))
+                    if not up and has(g) and (g >= b if touch_limit else g > b):
+                        candidates.append((cur - g, 1, g))
+                if lt == 2 and up and lp <= b:
+                    candidates.append((lp - cur, 2, lp))
+                if lt == 3 and not up and (lp >= b if touch_limit else lp > b):
+                    candidates.append((cur - lp, 2, lp))
+                if st == 2 and not up and sp >= b:
+                    candidates.append((cur - sp, 3, sp))
+                if st == 3 and up and (sp <= b if touch_limit else sp < b):
+                    candidates.append((sp - cur, 3, sp))
+                candidates = [c for c in candidates if c[0] >= 0]
+                if not candidates:
+                    break
+                dist, kind, lv = min(candidates, key=lambda c: (c[0], c[1]))
+                if kind == 0:
+                    close_trade(t, s - side_of(pos) * slip, 1)
+                    levels["stop"] = levels["target"] = np.nan
+                elif kind == 1:
+                    close_trade(t, g, 2)
+                    levels["stop"] = levels["target"] = np.nan
+                elif kind == 2:
+                    enter(t, lp + slip if lt == 2 else lp, 1, lq, plan["long_stop_offset"][d])
+                    lt = 0
+                    arm()
+                else:
+                    enter(t, sp - slip if st == 2 else sp, -1, sq, plan["short_stop_offset"][d])
+                    st = 0
+                    arm()
+                cur = lv
+                touch(cur)
+            touch(b)
+
+        last_of_session = t + 1 == n or session[t + 1] != session[t]
+        if state["pos"] != 0 and inst["exit_on_session_close"] and last_of_session and t + 1 < n:
+            close_trade(t, C - side_of(state["pos"]) * slip, 4)
+        if state["pos"] != 0 and t + 1 == n:
+            close_trade(t, C, 6)
+        pnl[t] = inst["point_value"] * (state["pos"] * C - pos_start * C_[t - 1] + state["cash"]) - state["commission"]
+        position[t] = state["pos"]
+    return {"pnl": pnl, "position": position, "trades": trades, "n_fills": state["fills"]}

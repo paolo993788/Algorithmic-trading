@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <vector>
 
+#include "bars.hpp"
 #include "kalman.hpp"
 #include "momentum.hpp"
 #include "overfitting.hpp"
@@ -323,6 +324,179 @@ void test_momentum_accounting_lag_and_grid() {
     CHECK(throws_invalid_argument([&] { bt::tsmom_backtest(p, n - 1, k, 60, 20.0, 0.4, max_lev, cost, 1, 252.0); }));
 }
 
+
+// ------------------------------------------------------------------------------------------------ bar engine
+
+bt::BarOrders empty_orders(std::size_t n) {
+    bt::BarOrders o;
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    o.long_type.assign(n, 0);
+    o.short_type.assign(n, 0);
+    o.long_price.assign(n, nan);
+    o.short_price.assign(n, nan);
+    o.long_qty.assign(n, 1);
+    o.short_qty.assign(n, 1);
+    o.long_stop.assign(n, nan);
+    o.long_target.assign(n, nan);
+    o.short_stop.assign(n, nan);
+    o.short_target.assign(n, nan);
+    o.long_stop_offset.assign(n, nan);
+    o.short_stop_offset.assign(n, nan);
+    o.long_exit.assign(n, 0);
+    o.short_exit.assign(n, 0);
+    return o;
+}
+
+void test_bar_fill_rules_and_accounting() {
+    // Three bars: the decision at bar 0 works during bar 1, which opens at 100 with high 103 and low 97.
+    std::vector<double> open = {100, 101, 100}, high = {101, 103, 101}, low = {99, 97, 99}, close = {100, 100, 100};
+    std::vector<std::int64_t> session = {0, 0, 0};
+    bt::BarInstrument inst;
+    inst.point_value = 50.0;
+    inst.tick_size = 0.25;
+    inst.commission = 2.0;
+    inst.slippage_ticks = 1.0;
+    // Market entry at the open with slippage; open closer to the high (101 -> 103 is 2, 101 -> 97 is 4): the target fills first.
+    bt::BarOrders o = empty_orders(3);
+    o.long_type[0] = bt::kMarket;
+    o.long_stop[0] = 98.0;
+    o.long_target[0] = 102.0;
+    bt::BarResult r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.size() == 1);
+    CHECK_CLOSE(r.trades[0].entry_price, 101.25, 1e-12);
+    CHECK_CLOSE(r.trades[0].exit_price, 102.0, 1e-12);
+    CHECK(r.trades[0].exit_reason == bt::kExitTarget);
+    CHECK_CLOSE(r.trades[0].pnl, 50.0 * (102.0 - 101.25) - 4.0, 1e-12);
+    CHECK_CLOSE(r.pnl[1], r.trades[0].pnl, 1e-12);
+    CHECK(r.position[1] == 0 && r.n_fills == 2);
+    // Open closer to the low: the stop fills first, with slippage against the position.
+    open[1] = 98.5;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades[0].exit_reason == bt::kExitStop);
+    CHECK_CLOSE(r.trades[0].exit_price, 98.0 - 0.25, 1e-12);
+    CHECK_CLOSE(r.trades[0].mfe, 0.0, 1e-12);  // the path went down first
+    open[1] = 101.0;
+    // A target at the high needs a trade through unless limit_on_touch (no stop this time).
+    o.long_stop[0] = std::numeric_limits<double>::quiet_NaN();
+    o.long_target[0] = 103.0;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades[0].exit_reason == bt::kExitEndOfData);
+    inst.limit_on_touch = true;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades[0].exit_reason == bt::kExitTarget && r.trades[0].exit_bar == 1);
+    inst.limit_on_touch = false;
+    // Stop entry at its price; gapped beyond -> the open; not reached -> no trade.
+    o = empty_orders(3);
+    o.short_type[0] = bt::kStop;
+    o.short_price[0] = 99.0;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.size() == 1 && r.trades[0].side == -1);
+    CHECK_CLOSE(r.trades[0].entry_price, 99.0 - 0.25, 1e-12);
+    o.short_price[0] = 101.5;  // the bar opens at 101 <= 101.5
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK_CLOSE(r.trades[0].entry_price, 101.0 - 0.25, 1e-12);
+    o.short_price[0] = 96.0;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.empty());
+    // Limit entry: through (strict) versus touch.
+    o = empty_orders(3);
+    o.long_type[0] = bt::kLimit;
+    o.long_price[0] = 97.0;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.empty());
+    inst.limit_on_touch = true;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.size() == 1);
+    CHECK_CLOSE(r.trades[0].entry_price, 97.0, 1e-12);  // no slippage on limit fills
+    inst.limit_on_touch = false;
+    // Session close and market exits; the exit order of one side does not close the other.
+    o = empty_orders(3);
+    o.short_type[0] = bt::kMarket;
+    o.long_exit[1] = 1;
+    inst.exit_on_session_close = true;
+    session = {0, 0, 1};
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.size() == 1 && r.trades[0].exit_reason == bt::kExitSessionClose && r.trades[0].exit_bar == 1);
+    CHECK_CLOSE(r.trades[0].exit_price, close[1] + 0.25, 1e-12);
+    session = {0, 0, 0};
+    inst.exit_on_session_close = false;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades[0].exit_reason == bt::kExitEndOfData);  // long_exit ignored while short
+    o.short_exit[1] = 1;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades[0].exit_reason == bt::kExitMarket && r.trades[0].exit_bar == 2);
+    CHECK_CLOSE(r.trades[0].exit_price, open[2] + 0.25, 1e-12);
+    // Accounting identity on a random sequence of orders: sum of trade P&L = sum of bar P&L; every trade closed.
+    const std::size_t n = 2000;
+    bt::Xoshiro256 rng(77);
+    std::vector<double> o2(n), h2(n), l2(n), c2(n);
+    std::vector<std::int64_t> s2(n);
+    double level = 100.0;
+    for (std::size_t t = 0; t < n; ++t) {
+        o2[t] = level + 0.5 * rng.normal();
+        c2[t] = o2[t] + rng.normal();
+        h2[t] = std::max(o2[t], c2[t]) + std::abs(rng.normal());
+        l2[t] = std::min(o2[t], c2[t]) - std::abs(rng.normal());
+        level = c2[t];
+        s2[t] = static_cast<std::int64_t>(t / 5);
+    }
+    bt::BarOrders o3 = empty_orders(n);
+    for (std::size_t t = 0; t < n; ++t) {
+        o3.long_type[t] = static_cast<int>(rng.uniform() * 4.0);
+        o3.short_type[t] = static_cast<int>(rng.uniform() * 4.0);
+        o3.long_price[t] = c2[t] + rng.normal();
+        o3.short_price[t] = c2[t] + rng.normal();
+        o3.long_qty[t] = 1 + static_cast<int>(rng.uniform() * 3.0);
+        o3.short_qty[t] = 1 + static_cast<int>(rng.uniform() * 3.0);
+        if (rng.uniform() < 0.6) o3.long_stop[t] = c2[t] - std::abs(rng.normal());
+        if (rng.uniform() < 0.6) o3.long_target[t] = c2[t] + std::abs(rng.normal());
+        if (rng.uniform() < 0.6) o3.short_stop[t] = c2[t] + std::abs(rng.normal());
+        if (rng.uniform() < 0.6) o3.short_target[t] = c2[t] - std::abs(rng.normal());
+        if (rng.uniform() < 0.4) o3.long_stop_offset[t] = 0.5 + std::abs(rng.normal());
+        if (rng.uniform() < 0.4) o3.short_stop_offset[t] = 0.5 + std::abs(rng.normal());
+        o3.long_exit[t] = rng.uniform() < 0.1 ? 1 : 0;
+        o3.short_exit[t] = rng.uniform() < 0.1 ? 1 : 0;
+    }
+    inst.exit_on_session_close = true;
+    const bt::BarResult big = bt::bar_backtest(o2, h2, l2, c2, s2, o3, inst);
+    double trade_sum = 0.0, bar_sum = 0.0, commissions = 0.0;
+    int contracts_traded = 0;
+    for (const bt::BarTrade& tr : big.trades) {
+        trade_sum += tr.pnl;
+        commissions += tr.commission;
+        contracts_traded += tr.qty;
+        CHECK(tr.mfe >= tr.side * (tr.exit_price - tr.entry_price) - 1e-12);
+        CHECK(tr.mae >= -tr.side * (tr.exit_price - tr.entry_price) - 1e-12);
+        CHECK(tr.exit_bar >= tr.entry_bar && tr.qty >= 1);
+    }
+    for (double v : big.pnl) bar_sum += v;
+    CHECK(big.trades.size() > 300);
+    CHECK_CLOSE(trade_sum, bar_sum, 1e-6);
+    CHECK_CLOSE(commissions, 2.0 * 2.0 * contracts_traded, 1e-9);
+    CHECK(big.position.back() == 0);
+    // The parallel grid equals the single runs and does not depend on the thread count.
+    std::vector<bt::BarOrders> plans = {o3, o3, empty_orders(n)};
+    plans[1].long_stop_offset.assign(n, 1.0);
+    const std::vector<bt::BarResult> g1 = bt::bar_backtest_many(o2, h2, l2, c2, s2, plans, inst, 1);
+    const std::vector<bt::BarResult> g4 = bt::bar_backtest_many(o2, h2, l2, c2, s2, plans, inst, 4);
+    CHECK(g1.size() == 3 && g1[0].pnl == big.pnl && g1[1].pnl == g4[1].pnl && g1[2].trades.empty());
+    CHECK(g1[1].trades.size() == g4[1].trades.size() && g1[1].pnl != g1[0].pnl);
+    // Argument validation.
+    CHECK(throws_invalid_argument([&] { bt::bar_backtest(open, high, low, std::vector<double>{100, 100}, session, empty_orders(3), inst); }));
+    std::vector<double> bad_high = {101, 100.5, 101};  // below the open of bar 1
+    CHECK(throws_invalid_argument([&] { bt::bar_backtest(open, bad_high, low, close, session, empty_orders(3), inst); }));
+    bt::BarOrders bad = empty_orders(3);
+    bad.long_type[0] = bt::kStop;  // no price
+    CHECK(throws_invalid_argument([&] { bt::bar_backtest(open, high, low, close, session, bad, inst); }));
+    bad = empty_orders(3);
+    bad.long_type[0] = bt::kMarket;
+    bad.long_qty[0] = 0;
+    CHECK(throws_invalid_argument([&] { bt::bar_backtest(open, high, low, close, session, bad, inst); }));
+    bt::BarInstrument bad_inst;
+    bad_inst.slippage_ticks = 1.0;  // without a tick size
+    CHECK(throws_invalid_argument([&] { bt::bar_backtest(open, high, low, close, session, empty_orders(3), bad_inst); }));
+}
+
 // ------------------------------------------------------------------------------------------------ bootstrap, CSCV
 
 void test_stationary_bootstrap() {
@@ -415,6 +589,7 @@ int main() {
     test_kalman_missing_observation_and_arguments();
     test_pairs_rules_lag_and_accounting();
     test_momentum_accounting_lag_and_grid();
+    test_bar_fill_rules_and_accounting();
     test_stationary_bootstrap();
     test_sharpe_and_cscv();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);

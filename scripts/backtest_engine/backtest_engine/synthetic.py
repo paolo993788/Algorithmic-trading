@@ -40,3 +40,70 @@ def trending_prices(n=6500, n_assets=9, start="1999-01-04", seed=23):
                          columns=[f"asset_{i + 1}" for i in range(n_assets)])
     frame.attrs["source"] = f"synthetic trending prices (seed {seed}), not market data"
     return frame
+
+
+def daily_bars(n=6500, start="2000-01-03", seed=41, level=100.0, tick_size=0.01, annual_vol=0.18, steps_per_day=26,
+               trend_sharpe=0.0, gap_fraction=0.25):
+    """Daily OHLCV bars from a simulated intraday path: each day is `steps_per_day` lognormal steps whose drift is
+    redrawn on average every 250 days (an annualised Sharpe ratio of `trend_sharpe` for the trend component; 0
+    gives a driftless random walk), with an overnight gap carrying `gap_fraction` of the daily variance. Prices are
+    rounded to the tick grid; volume is lognormal noise. Not market data."""
+    rng = np.random.default_rng(seed)
+    daily_sd = annual_vol / np.sqrt(252.0)
+    gap_sd = daily_sd * np.sqrt(gap_fraction)
+    step_sd = daily_sd * np.sqrt((1.0 - gap_fraction) / steps_per_day)
+    log_p = np.log(level)
+    drift = 0.0
+    rows = np.empty((n, 4))
+    for t in range(n):
+        if rng.random() < 1.0 / 250.0:
+            drift = trend_sharpe * daily_sd / np.sqrt(252.0) * rng.standard_normal()  # daily drift of a trend with that Sharpe ratio
+        log_p += gap_sd * rng.standard_normal() + drift / steps_per_day
+        path = log_p + np.cumsum(step_sd * rng.standard_normal(steps_per_day) + drift / steps_per_day)
+        prices = np.exp(np.r_[log_p, path])
+        rows[t] = prices[0], prices.max(), prices.min(), prices[-1]
+        log_p = path[-1]
+    o, h, l, c = (np.sign(v) * np.floor(np.abs(v) / tick_size + 0.5 + 1e-9) * tick_size for v in rows.T)
+    h, l = np.maximum(h, np.maximum(o, c)), np.minimum(l, np.minimum(o, c))
+    frame = pd.DataFrame({"open": o, "high": h, "low": l, "close": c,
+                          "volume": np.round(np.exp(rng.normal(10.0, 0.4, n)))}, index=pd.bdate_range(start, periods=n))
+    frame.attrs["source"] = f"synthetic daily bars (seed {seed}), not market data"
+    return frame
+
+
+def intraday_bars(n_days=750, start="2018-01-02", seed=43, level=4000.0, tick_size=0.25, annual_vol=0.18,
+                  bar_minutes=5, session_start="09:30", session_end="16:00", opening_drift_persistence=0.0,
+                  steps_per_bar=10):
+    """Intraday OHLCV bars of a regular session, stamped at the bar's close as NinjaTrader does (09:35 ... 16:00 for
+    5-minute bars of a 09:30-16:00 session). Each bar is `steps_per_bar` lognormal sub-steps (the coarser the steps,
+    the larger the jumps through stop prices that bar-level fills ignore); the first bar of the day carries an
+    overnight gap. With `opening_drift_persistence` > 0 the rest of the day drifts in the direction of the first bar
+    by that fraction of the first bar's move (a synthetic intraday momentum used to check the power of the tests;
+    0 gives a martingale). Not market data."""
+    rng = np.random.default_rng(seed)
+    start_t, end_t = pd.Timestamp(session_start), pd.Timestamp(session_end)
+    bars_per_day = int((end_t - start_t) / pd.Timedelta(minutes=bar_minutes))
+    steps = int(steps_per_bar)
+    step_sd = annual_vol / np.sqrt(252.0 * bars_per_day * steps) * np.sqrt(0.8)
+    gap_sd = annual_vol / np.sqrt(252.0) * np.sqrt(0.2)
+    days = pd.bdate_range(start, periods=n_days)
+    stamps, rows = [], []
+    log_p = np.log(level)
+    for day in days:
+        log_p += gap_sd * rng.standard_normal()
+        first_move = 0.0
+        for b in range(bars_per_day):
+            drift = opening_drift_persistence * first_move / (bars_per_day - 1) if b > 0 else 0.0
+            path = log_p + np.cumsum(step_sd * rng.standard_normal(steps) + drift / steps)
+            prices = np.exp(np.r_[log_p, path])
+            rows.append((prices[0], prices.max(), prices.min(), prices[-1]))
+            if b == 0:
+                first_move = path[-1] - log_p
+            log_p = path[-1]
+            stamps.append(day + (start_t - start_t.normalize()) + pd.Timedelta(minutes=bar_minutes * (b + 1)))
+    o, h, l, c = (np.sign(v) * np.floor(np.abs(v) / tick_size + 0.5 + 1e-9) * tick_size for v in np.array(rows).T)
+    h, l = np.maximum(h, np.maximum(o, c)), np.minimum(l, np.minimum(o, c))
+    frame = pd.DataFrame({"open": o, "high": h, "low": l, "close": c,
+                          "volume": np.round(np.exp(rng.normal(7.0, 0.5, len(rows))))}, index=pd.DatetimeIndex(stamps))
+    frame.attrs["source"] = f"synthetic {bar_minutes}-minute bars (seed {seed}), not market data"
+    return frame

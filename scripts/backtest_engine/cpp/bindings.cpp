@@ -4,8 +4,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <cstdint>
 #include <vector>
 
+#include "bars.hpp"
 #include "kalman.hpp"
 #include "momentum.hpp"
 #include "overfitting.hpp"
@@ -13,6 +15,9 @@
 
 namespace py = pybind11;
 using DoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
+using IntArray = py::array_t<int, py::array::c_style | py::array::forcecast>;
+using Int64Array = py::array_t<std::int64_t, py::array::c_style | py::array::forcecast>;
+using ByteArray = py::array_t<unsigned char, py::array::c_style | py::array::forcecast>;
 
 namespace {
 
@@ -37,6 +42,91 @@ py::array_t<double> to_matrix(const std::vector<double>& v, std::size_t rows, st
 std::pair<std::size_t, std::size_t> matrix_shape(const DoubleArray& a) {
     if (a.ndim() != 2) throw py::value_error("expected a 2-D array (time x series)");
     return {static_cast<std::size_t>(a.shape(0)), static_cast<std::size_t>(a.shape(1))};
+}
+
+template <class T, class A>
+std::vector<T> to_vector_of(const A& a) {
+    const auto buf = a.request();
+    const T* ptr = static_cast<const T*>(buf.ptr);
+    return std::vector<T>(ptr, ptr + buf.size);
+}
+
+bt::BarOrders orders_from_dict(const py::dict& plan) {
+    bt::BarOrders o;
+    o.long_type = to_vector_of<int>(plan["long_type"].cast<IntArray>());
+    o.short_type = to_vector_of<int>(plan["short_type"].cast<IntArray>());
+    o.long_price = to_vector(plan["long_price"].cast<DoubleArray>());
+    o.short_price = to_vector(plan["short_price"].cast<DoubleArray>());
+    o.long_qty = to_vector_of<int>(plan["long_qty"].cast<IntArray>());
+    o.short_qty = to_vector_of<int>(plan["short_qty"].cast<IntArray>());
+    o.long_stop = to_vector(plan["long_stop"].cast<DoubleArray>());
+    o.long_target = to_vector(plan["long_target"].cast<DoubleArray>());
+    o.short_stop = to_vector(plan["short_stop"].cast<DoubleArray>());
+    o.short_target = to_vector(plan["short_target"].cast<DoubleArray>());
+    o.long_stop_offset = to_vector(plan["long_stop_offset"].cast<DoubleArray>());
+    o.short_stop_offset = to_vector(plan["short_stop_offset"].cast<DoubleArray>());
+    o.long_exit = to_vector_of<unsigned char>(plan["long_exit"].cast<ByteArray>());
+    o.short_exit = to_vector_of<unsigned char>(plan["short_exit"].cast<ByteArray>());
+    return o;
+}
+
+bt::BarInstrument instrument_from_dict(const py::dict& inst) {
+    bt::BarInstrument i;
+    i.point_value = inst["point_value"].cast<double>();
+    i.tick_size = inst["tick_size"].cast<double>();
+    i.commission = inst["commission"].cast<double>();
+    i.slippage_ticks = inst["slippage_ticks"].cast<double>();
+    i.limit_on_touch = inst["limit_on_touch"].cast<bool>();
+    i.exit_on_session_close = inst["exit_on_session_close"].cast<bool>();
+    return i;
+}
+
+py::dict trades_to_dict(const std::vector<bt::BarTrade>& trades) {
+    const py::ssize_t n = static_cast<py::ssize_t>(trades.size());
+    py::array_t<std::int64_t> entry_bar(n), exit_bar(n), side(n), qty(n), reason(n);
+    py::array_t<double> entry_price(n), exit_price(n), pnl(n), commission(n), mae(n), mfe(n);
+    auto eb = entry_bar.mutable_unchecked<1>(), xb = exit_bar.mutable_unchecked<1>(), sd = side.mutable_unchecked<1>(),
+         q = qty.mutable_unchecked<1>(), rs = reason.mutable_unchecked<1>();
+    auto ep = entry_price.mutable_unchecked<1>(), xp = exit_price.mutable_unchecked<1>(), pl = pnl.mutable_unchecked<1>(),
+         cm = commission.mutable_unchecked<1>(), ma = mae.mutable_unchecked<1>(), mf = mfe.mutable_unchecked<1>();
+    for (py::ssize_t i = 0; i < n; ++i) {
+        const bt::BarTrade& t = trades[static_cast<std::size_t>(i)];
+        eb(i) = static_cast<std::int64_t>(t.entry_bar);
+        xb(i) = static_cast<std::int64_t>(t.exit_bar);
+        sd(i) = t.side;
+        q(i) = t.qty;
+        rs(i) = t.exit_reason;
+        ep(i) = t.entry_price;
+        xp(i) = t.exit_price;
+        pl(i) = t.pnl;
+        cm(i) = t.commission;
+        ma(i) = t.mae;
+        mf(i) = t.mfe;
+    }
+    py::dict d;
+    d["entry_bar"] = entry_bar;
+    d["exit_bar"] = exit_bar;
+    d["side"] = side;
+    d["qty"] = qty;
+    d["entry_price"] = entry_price;
+    d["exit_price"] = exit_price;
+    d["pnl"] = pnl;
+    d["commission"] = commission;
+    d["mae"] = mae;
+    d["mfe"] = mfe;
+    d["exit_reason"] = reason;
+    return d;
+}
+
+py::dict bar_result_to_dict(const bt::BarResult& r) {
+    py::dict d;
+    d["pnl"] = to_array(r.pnl);
+    py::array_t<int> position(static_cast<py::ssize_t>(r.position.size()));
+    std::copy(r.position.begin(), r.position.end(), position.mutable_data());
+    d["position"] = position;
+    d["trades"] = trades_to_dict(r.trades);
+    d["n_fills"] = r.n_fills;
+    return d;
 }
 
 }  // namespace
@@ -174,6 +264,58 @@ PYBIND11_MODULE(_core, m) {
         py::arg("prices"), py::arg("lookbacks"), py::arg("coms"), py::arg("target_vol") = 0.4, py::arg("max_leverage") = 10.0,
         py::arg("cost") = 0.0, py::arg("lag") = 1, py::arg("periods_per_year") = 252.0, py::arg("n_threads") = 0,
         "Daily returns of every (lookback, com) momentum configuration, computed in parallel.");
+
+
+    m.def(
+        "bar_backtest",
+        [](const DoubleArray& open, const DoubleArray& high, const DoubleArray& low, const DoubleArray& close,
+           const Int64Array& session, const py::dict& plan, const py::dict& instrument) {
+            const auto o = to_vector(open), h = to_vector(high), l = to_vector(low), c = to_vector(close);
+            const auto s = to_vector_of<std::int64_t>(session);
+            const bt::BarOrders orders = orders_from_dict(plan);
+            const bt::BarInstrument inst = instrument_from_dict(instrument);
+            bt::BarResult r;
+            {
+                py::gil_scoped_release release;
+                r = bt::bar_backtest(o, h, l, c, s, orders, inst);
+            }
+            return bar_result_to_dict(r);
+        },
+        py::arg("open"), py::arg("high"), py::arg("low"), py::arg("close"), py::arg("session"), py::arg("plan"),
+        py::arg("instrument"),
+        "Bar-by-bar simulation of an order plan with NinjaTrader-style fills; returns P&L, positions and trades.");
+
+    m.def(
+        "bar_backtest_many",
+        [](const DoubleArray& open, const DoubleArray& high, const DoubleArray& low, const DoubleArray& close,
+           const Int64Array& session, const std::vector<py::dict>& plans, const py::dict& instrument, int n_threads) {
+            const auto o = to_vector(open), h = to_vector(high), l = to_vector(low), c = to_vector(close);
+            const auto s = to_vector_of<std::int64_t>(session);
+            std::vector<bt::BarOrders> orders;
+            orders.reserve(plans.size());
+            for (const py::dict& p : plans) orders.push_back(orders_from_dict(p));
+            const bt::BarInstrument inst = instrument_from_dict(instrument);
+            std::vector<bt::BarResult> results;
+            {
+                py::gil_scoped_release release;
+                results = bt::bar_backtest_many(o, h, l, c, s, orders, inst, n_threads);
+            }
+            const std::size_t n_obs = o.size(), n_plans = results.size();
+            std::vector<double> pnl(n_obs * n_plans);
+            py::array_t<std::int64_t> n_trades(static_cast<py::ssize_t>(n_plans));
+            auto nt = n_trades.mutable_unchecked<1>();
+            for (std::size_t j = 0; j < n_plans; ++j) {
+                for (std::size_t t = 0; t < n_obs; ++t) pnl[t * n_plans + j] = results[j].pnl[t];
+                nt(static_cast<py::ssize_t>(j)) = static_cast<std::int64_t>(results[j].trades.size());
+            }
+            py::dict d;
+            d["pnl"] = to_matrix(pnl, n_obs, n_plans);
+            d["n_trades"] = n_trades;
+            return d;
+        },
+        py::arg("open"), py::arg("high"), py::arg("low"), py::arg("close"), py::arg("session"), py::arg("plans"),
+        py::arg("instrument"), py::arg("n_threads") = 0,
+        "P&L per bar of several order plans on the same bars (time x plan), computed in parallel.");
 
     m.def(
         "cscv",

@@ -13,10 +13,12 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "bars.hpp"
 #include "kalman.hpp"
 #include "momentum.hpp"
 #include "overfitting.hpp"
@@ -138,6 +140,77 @@ int main(int argc, char** argv) {
     for (int threads : thread_counts) {
         ms = median_ms(repeats, [&] { return bt::cscv(cscv_returns, n_cscv, k_boot, S, threads).pbo; }, checksum);
         row("cscv", std::to_string(n_cscv) + " x " + std::to_string(k_boot) + ", S = " + std::to_string(S), threads, ms, checksum);
+    }
+
+    // Bar engine: a channel-breakout order plan on 5-minute bars (10 years of a regular session), and a grid of
+    // 64 plans on daily bars.
+    {
+        const std::size_t n_bars = quick ? 5000 : 196000;
+        std::vector<double> o(n_bars), h(n_bars), l(n_bars), c(n_bars);
+        std::vector<std::int64_t> s(n_bars);
+        bt::Xoshiro256 rng(9);
+        double level = 4000.0;
+        for (std::size_t t = 0; t < n_bars; ++t) {
+            o[t] = level + 0.25 * rng.normal();
+            c[t] = o[t] + 0.5 * rng.normal();
+            h[t] = std::max(o[t], c[t]) + 0.5 * std::abs(rng.normal());
+            l[t] = std::min(o[t], c[t]) - 0.5 * std::abs(rng.normal());
+            level = c[t];
+            s[t] = static_cast<std::int64_t>(t / 78);
+        }
+        auto breakout_plan = [&](int period) {
+            bt::BarOrders p;
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            p.long_type.assign(n_bars, bt::kStop);
+            p.short_type.assign(n_bars, bt::kStop);
+            p.long_price.assign(n_bars, nan);
+            p.short_price.assign(n_bars, nan);
+            p.long_qty.assign(n_bars, 1);
+            p.short_qty.assign(n_bars, 1);
+            p.long_stop.assign(n_bars, nan);
+            p.long_target.assign(n_bars, nan);
+            p.short_stop.assign(n_bars, nan);
+            p.short_target.assign(n_bars, nan);
+            p.long_stop_offset.assign(n_bars, 2.0);
+            p.short_stop_offset.assign(n_bars, 2.0);
+            p.long_exit.assign(n_bars, 0);
+            p.short_exit.assign(n_bars, 0);
+            for (std::size_t t = 0; t < n_bars; ++t) {
+                double hi = h[t], lo = l[t];
+                for (int k = 1; k <= period && k <= static_cast<int>(t); ++k) {
+                    hi = std::max(hi, h[t - static_cast<std::size_t>(k)]);
+                    lo = std::min(lo, l[t - static_cast<std::size_t>(k)]);
+                }
+                p.long_price[t] = hi + 0.25;
+                p.short_price[t] = lo - 0.25;
+            }
+            return p;
+        };
+        bt::BarInstrument inst;
+        inst.point_value = 50.0;
+        inst.tick_size = 0.25;
+        inst.commission = 2.05;
+        inst.slippage_ticks = 1.0;
+        inst.exit_on_session_close = true;
+        const bt::BarOrders plan = breakout_plan(20);
+        ms = median_ms(repeats, [&] {
+            const bt::BarResult r = bt::bar_backtest(o, h, l, c, s, plan, inst);
+            double sum = 0.0;
+            for (double v : r.pnl) sum += v;
+            return sum + static_cast<double>(r.trades.size());
+        }, checksum);
+        row("bar_backtest", std::to_string(n_bars) + " bars, breakout plan", 1, ms, checksum);
+        std::vector<bt::BarOrders> plans;
+        for (int period = 5; period < 5 + (quick ? 8 : 64); ++period) plans.push_back(breakout_plan(period));
+        for (int threads : thread_counts) {
+            ms = median_ms(repeats, [&] {
+                const std::vector<bt::BarResult> rs = bt::bar_backtest_many(o, h, l, c, s, plans, inst, threads);
+                double sum = 0.0;
+                for (const bt::BarResult& r : rs) sum += r.pnl.back() + static_cast<double>(r.trades.size());
+                return sum;
+            }, checksum);
+            row("bar_backtest_many", std::to_string(n_bars) + " bars x " + std::to_string(plans.size()) + " plans", threads, ms, checksum);
+        }
     }
     return 0;
 }

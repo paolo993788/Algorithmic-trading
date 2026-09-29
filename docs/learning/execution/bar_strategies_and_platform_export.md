@@ -19,11 +19,12 @@ exactly this, so a rule validated in Python trades the same way on the platform.
 
 ## 2. A numerical example
 
-A long position is opened at the open of a bar with open 4002, high 4003, low 3997 and close 4000, with a stop at
-4000 and a target at 4004. The high is 1 point from the open and the low 5 points, so the assumed path is
-4002 → 4003 → 3997 → 4000. The target at 4004 is above the high, so it is not reached; the stop at 4000 is reached
-on the second segment and the trade exits at 4000. With the open at 3998 the path becomes 3998 → 3997 → 4003 → 4000:
-the stop is now reached on the first segment. The section 2 figure of the notebook draws both cases.
+A long position is opened at the open of a bar with high 4006, low 3994 and close 4000, with a stop at 3998 and a
+target at 4002, both inside the bar's range. With the open at 4001 the high is 5 points away and the low 7, so the
+assumed path is 4001 → 4006 → 3994 → 4000: the target at 4002 is reached on the first segment and the trade exits
+there. With the open at 3999 the path becomes 3999 → 3994 → 4006 → 4000: the stop at 3998 is reached first. Same
+bar, same levels, opposite outcomes, decided by which extreme the open is nearer to. The section 2 figure of the
+notebook draws both cases.
 
 A second example is the one that matters most in practice. On a martingale, a rule that is stopped out on most days
 should lose the costs and nothing else. Simulating 5-minute bars whose true path has 10 steps per bar, the opening
@@ -49,7 +50,11 @@ bar $t+1$.
 - buy stop at $p$: at $O + \kappa$ if $O \ge p$, else at $p + \kappa$ if $H \ge p$, else none (sell stop mirrored);
 - buy limit at $p$: at $O$ if $O < p$, else at $p$ if $L < p$ (or $L \le p$ with fill on touch), else none;
 - intrabar order: the path is $(O, H, L, C)$ if $H - O < O - L$, else $(O, L, H, C)$; on each monotone segment the
-  working orders whose prices lie ahead are filled in order of distance, exits before entries at equal prices.
+  working orders whose prices lie ahead are filled in order of distance; at equal prices a stop (reached) fills
+  before a limit (traded through), and an exit before an entry;
+- marketable levels: a protective stop or target that is already at or beyond the market when it is attached (at
+  the open for a held or just-opened position, at the fill price for an intrabar entry) fills at once at that price,
+  as a platform fills an order placed on the wrong side of the market.
 
 **Protective stop** of a position entered at price $f$ during bar $u$, working during bar $v \ge u$ with decision
 bar $d = v - 1$: $\sigma^{L}_d$ if no offset was given, $f - \delta$ on the entry bar, and afterwards
@@ -89,7 +94,11 @@ values, and `BarsRequiredToTrade` is set to the same warm-up in the generated Ni
 - Bracket orders can fill on the entry bar, including a stop that the bar opens beyond after a market entry.
 - The exit on session close fills at the last bar's close.
 - One entry per direction; an opposite entry reverses at one fill; entry orders live for one bar (the platform's
-  basic overloads), so plans resubmit them every bar.
+  basic overloads), so plans resubmit them every bar. The platform's managed approach also refuses an entry order
+  opposite to a working one, so the breakout strategy is generated with the unmanaged approach, which submits and
+  cancels its orders explicitly.
+- Rules with market orders only (RSI, calendar) track the position in the plan itself, as the NinjaScript does with
+  `Position.MarketPosition`: while in a position only the exit rule is evaluated.
 - Order prices are rounded half away from zero to the tick grid in Python and in the generated NinjaScript; ATR
   distances become an integer number of ticks.
 
@@ -129,6 +138,10 @@ for the tests, not for research runs.
   bracket fills on the entry bar are documented choices; `reconcile_trades` reports where the platform disagrees.
 - **Wrong-side orders**: a sell stop above the market is rejected by the platform; plans cap protective stops at one
   tick beyond the close and place breakout stops one tick beyond the channel, so the same guard is in both engines.
+  A level that is nevertheless beyond the market when attached is treated by the engine as marketable and filled at
+  once, so a plan that violates the guard loses at the fill rather than resting an order the platform would refuse.
+- **Managed-approach rules**: the platform ignores an entry order opposite to a working one (even when flat) and
+  mixes of exit and set methods; strategies that need bracket entries use the unmanaged approach.
 - **Session templates**: the platform's `IsFirstBarOfSession` depends on the trading-hours template; the Python
   sessions must be built from the same clock times, and bars are stamped at their close.
 - **Sizing on account equity**: NinjaScript can size on the account, Python plans cannot see it; plans size on a fixed

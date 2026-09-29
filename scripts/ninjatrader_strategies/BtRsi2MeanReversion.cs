@@ -41,9 +41,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsExitOnSessionCloseStrategy = false;
                 ExitOnSessionCloseSeconds = 30;
                 IsFillLimitOnTouch = false;
-                MaximumBarsLookBack = MaximumBarsLookBack.TwoHundredFiftySix;
+                MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
                 OrderFillResolution = OrderFillResolution.Standard;
-                Slippage = 0.0;
+                Slippage = 0;
+
                 StartBehavior = StartBehavior.WaitUntilFlat;
                 TimeInForce = TimeInForce.Gtc;
                 TraceOrders = false;

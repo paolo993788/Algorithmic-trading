@@ -3,7 +3,7 @@
 //
 // Turn-of-the-month seasonality (Lakonishok and Smidt, 1988): buy at the open of the DaysBefore-th weekday before the
 // month end (holidays ignored; a missed entry is taken at the second bar of the new month) and sell at the open after the
-// DaysAfter-th trading day of the new month.
+// DaysAfter-th trading day of the new month. No order at the first bar of the data.
 // The rules and defaults are those of backtest_engine.bars.turn_of_month_plan; the platform's historical fills
 // (Calculate.OnBarClose, Standard order fill resolution, entry orders alive for one bar, TimeInForce Gtc) follow the
 // model of cpp/bars.hpp, so the trade list of the Strategy Analyzer can be reconciled with the Python backtest by
@@ -41,9 +41,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsExitOnSessionCloseStrategy = false;
                 ExitOnSessionCloseSeconds = 30;
                 IsFillLimitOnTouch = false;
-                MaximumBarsLookBack = MaximumBarsLookBack.TwoHundredFiftySix;
+                MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
                 OrderFillResolution = OrderFillResolution.Standard;
-                Slippage = 0.0;
+                Slippage = 0;
+
                 StartBehavior = StartBehavior.WaitUntilFlat;
                 TimeInForce = TimeInForce.Gtc;
                 TraceOrders = false;
@@ -73,13 +74,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             int month = date.Year * 12 + date.Month;
             barsInMonth = month == lastMonth ? barsInMonth + 1 : 1;
             lastMonth = month;
+            if (CurrentBar < 1)
+                return;  // the first bar of the data: no order, and its month is not a new month
 
             DateTime ahead = date;
             for (int i = 0; i < DaysBefore; i++)
                 ahead = NextWeekday(ahead);
             bool enter = NextWeekday(ahead).Month != date.Month && ahead.Month == date.Month;
-            if (barsInMonth == 1 && DaysBefore > 0)
-                enter = true;  // entry missed because of a holiday at the month end
+            if (barsInMonth == 1)
+                enter = true;  // entry missed because of a holiday at the month end: open at the next bar
             bool exit = barsInMonth == DaysAfter;
 
             if (Position.MarketPosition == MarketPosition.Long)

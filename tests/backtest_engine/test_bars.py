@@ -171,6 +171,61 @@ def test_session_close_exit_reversal_and_one_entry_per_direction():
     assert res.trades.loc[1, "exit_price"] == res.trades.loc[2, "entry_price"] == 100.0
 
 
+def test_wrong_side_protective_levels_are_marketable_when_attached():
+    # A limit entry filled at 98 with a price stop at 99.5 (above the fill): the stop is marketable at once and the
+    # trade exits at the fill price (minus slippage) on the entry bar, instead of resting until a later bar.
+    bars = frame([(100, 101, 99, 100), (100, 101, 97, 100), (100, 101, 99, 100)])
+    plan = plan_with(bars, long_type=[3, 0, 0], long_price=[98.0, np.nan, np.nan], long_stop=[99.5, 99.5, np.nan])
+    res = bl.run(bars, plan, INDEX.with_(slippage_ticks=1.0))
+    tr = res.trades.loc[1]
+    assert tr["entry_bar"] == tr["exit_bar"] == 1 and tr["exit_reason"] == "stop"
+    assert tr["entry_price"] == 98.0 and tr["exit_price"] == pytest.approx(98.0 - 0.01)
+    # A target below the fill is a marketable limit: filled at the fill price.
+    plan = plan_with(bars, long_type=[3, 0, 0], long_price=[98.0, np.nan, np.nan], long_target=[97.5, np.nan, np.nan])
+    tr = bl.run(bars, plan, INDEX).trades.loc[1]
+    assert tr["exit_reason"] == "target" and tr["exit_price"] == 98.0 and tr["exit_bar"] == 1
+    # The same holds for a stop-entry fill on the path, and mirrored for shorts.
+    plan = plan_with(bars, short_type=[3, 0, 0], short_price=[100.5, np.nan, np.nan], short_stop=[100.2, np.nan, np.nan])
+    tr = bl.run(bars, plan, INDEX).trades.loc[1]
+    assert tr["side"] == -1 and tr["exit_reason"] == "stop" and tr["exit_price"] == 100.5 and tr["exit_bar"] == 1
+
+
+def test_equal_prices_fill_stops_before_limits_and_exits_before_entries():
+    # Down segment through 99: a sell stop (reached) fills before a buy limit (traded through) at the same price,
+    # so the short is opened first and the limit then reverses it into a long.
+    bars = frame([(100, 101, 99, 100), (100, 100.5, 98, 99), (99, 100, 98.5, 99.5)])
+    plan = plan_with(bars, long_type=[3, 0, 0], long_price=[99.0, np.nan, np.nan], short_type=[2, 0, 0], short_price=[99.0, np.nan, np.nan])
+    res = bl.run(bars, plan, INDEX)
+    assert list(res.trades["side"]) == [-1, 1] and res.trades.loc[1, "exit_reason"] == "reversal"
+    assert res.position.iloc[1] == 1
+    # A protective stop and a stop entry at the same price: the exit fills first, then the entry (flat -> short).
+    bars = frame([(100, 101, 99, 100), (100, 100.5, 98, 99), (99, 100, 98.5, 99.5)])
+    plan = plan_with(bars, long_type=[1, 0, 0], long_stop=[99.0, np.nan, np.nan], short_type=[2, 0, 0], short_price=[99.0, np.nan, np.nan])
+    res = bl.run(bars, plan, INDEX)
+    assert list(res.trades["exit_reason"])[0] == "stop" and res.position.iloc[1] == -1
+
+
+def test_mae_includes_slippage_at_the_open_and_session_close_on_the_last_bar():
+    bars = frame([(100, 101, 99, 100), (100, 100.5, 100, 100.3), (100.3, 100.6, 100.2, 100.4)])
+    plan = plan_with(bars, long_type=[1, 0, 0])
+    res = bl.run(bars, plan, INDEX.with_(slippage_ticks=1.0, exit_on_session_close=True))
+    tr = res.trades.loc[1]
+    assert tr["entry_price"] == pytest.approx(100.01) and tr["mae"] == pytest.approx(0.01)    # the open is below the fill
+    # Each daily bar is its own session: the exit is a session-close exit at the close minus slippage, also on the last bar.
+    assert tr["exit_reason"] == "session close" and tr["exit_price"] == pytest.approx(100.3 - 0.01)
+    plan = plan_with(bars, long_type=[0, 1, 0])
+    tr = bl.run(bars, plan, INDEX.with_(slippage_ticks=1.0, exit_on_session_close=True)).trades.loc[1]
+    assert tr["exit_bar"] == 2 and tr["exit_reason"] == "session close" and tr["exit_price"] == pytest.approx(100.4 - 0.01)
+
+
+def test_non_positive_stop_offsets_are_rejected():
+    bars = frame([(100, 101, 99, 100), (100, 101, 99, 100)])
+    for bad in (0.0, -1.0):
+        plan = plan_with(bars, long_type=[1, 0], long_stop_offset=[bad, np.nan])
+        with pytest.raises(Exception):
+            bl.run(bars, plan, INDEX)
+
+
 def test_pnl_identity_and_trade_sums():
     n = 800
     o, h, l, c = random_bars(n, 5)
@@ -335,22 +390,40 @@ def test_rsi2_rules(daily):
     plan = bl.rsi2_plan(daily, inst, rsi_period=2, entry_level=10.0, exit_ma=5, trend_ma=200)
     c = daily["close"].to_numpy()
     rsi, trend, fast = bl.nt_rsi(c, 2), bl.nt_sma(c, 200), bl.nt_sma(c, 5)
-    expect_entry = (c > trend) & (rsi < 10.0)
-    expect_entry[:200] = False
-    np.testing.assert_array_equal(plan["long_type"].to_numpy() == 1, expect_entry)
-    expect_exit = c > fast
-    expect_exit[:200] = False
-    np.testing.assert_array_equal(plan["long_exit"].to_numpy() == 1, expect_exit)
+    signal_entry = (c > trend) & (rsi < 10.0)
+    signal_exit = c > fast
+    entries, exits = plan["long_type"].to_numpy() == 1, plan["long_exit"].to_numpy() == 1
+    assert entries[:200].sum() == 0 and exits[:200].sum() == 0
+    assert (signal_entry | ~entries).all() and (signal_exit | ~exits).all()   # orders only where the signals fire
+    assert entries.sum() > 5
+    # When flat every entry signal is taken and when long every exit signal is taken (the plan tracks the position).
+    position = 0
+    for t in range(200, len(c)):
+        if position == 0:
+            assert entries[t] == signal_entry[t] and not exits[t]
+            position = 1 if entries[t] else 0
+        else:
+            assert exits[t] == signal_exit[t] and not entries[t]
+            position = 0 if exits[t] else 1
     res = bl.run(daily, plan, inst)
     assert (res.trades["exit_reason"] != "stop").all() and len(res.trades) > 5
     # Every entry fill is at the open of the bar after a signal bar, and the position is never short.
     assert (res.position >= 0).all()
     assert all(plan["long_type"].iloc[b - 1] == 1 for b in res.trades["entry_bar"])
+    # The plan tracks the position: no entry while long, no exit flag while flat, no reversal with the short side.
+    held = res.position   # contracts at the close of the decision bar
+    assert not ((plan["long_type"] == 1) & (held > 0)).any() and not ((plan["long_exit"] == 1) & (held == 0)).any()
+    both = bl.rsi2_plan(daily, inst, short=True)
+    res2 = bl.run(daily, both, inst)
+    assert (res2.trades["exit_reason"] == "reversal").sum() == 0
+    assert not ((both["long_type"] == 1) & (both["short_exit"] == 1)).any()
+    assert set(res2.trades["side"]) == {1, -1}
 
 
 def test_turn_of_month_calendar(daily):
     inst = bl.INSTRUMENTS["index"]
     plan = bl.turn_of_month_plan(daily, inst, days_before=1, days_after=3)
+    assert plan["long_type"].iloc[0] == 0 and plan["long_exit"].iloc[0] == 0   # nothing at the platform's first bar
     res = bl.run(daily, plan, inst)
     trades = res.trades[res.trades["exit_reason"] == "market exit"]
     # Entries fill at the open of the last weekday of a month (or, after a holiday, the second bar of the new month);
@@ -363,6 +436,15 @@ def test_turn_of_month_calendar(daily):
         month_bars = daily.index[(daily.index.year == exit_.year) & (daily.index.month == exit_.month)]
         assert month_bars[3] == exit_
     assert len(trades) >= 60   # about one per month over 1,500 business days
+    # A month whose last weekday is missing from the data (holiday) is entered at the second bar of the new month,
+    # also with days_before = 0.
+    # With days_before = 1 the signal fires at the close before the holiday and the fill is the first bar of May;
+    # with days_before = 0 the signal bar itself is missing and the fallback enters at the second bar.
+    holed = daily.drop(pd.Timestamp("2004-04-30"))                      # Friday 30 April 2004 removed
+    for days_before, expected in ((1, "2004-05-03"), (0, "2004-05-04")):
+        r = bl.run(holed, bl.turn_of_month_plan(holed, inst, days_before=days_before, days_after=3), inst)
+        may = r.trades[(r.trades["entry_time"] >= "2004-05-01") & (r.trades["entry_time"] <= "2004-05-10")]
+        assert len(may) == 1 and may.iloc[0]["entry_time"] == pd.Timestamp(expected)
 
 
 def test_opening_range_breakout_rules_power_and_fill_optimism():
@@ -383,7 +465,7 @@ def test_opening_range_breakout_rules_power_and_fill_optimism():
     # Power: a synthetic intraday momentum is picked up.
     assert sharpes[1.5] > sharpes[0.0] + 1.0
     # Stops sit at the first bar's extreme and the target at the R multiple of the close-to-stop distance.
-    first = bars[bl.first_bar_of_session(session)]
+    first = bars[bl.first_bar_of_session(session)].iloc[1:]   # bar 0 carries no order
     up = first[first["close"] > first["open"]]
     rows = plan.loc[up.index]
     np.testing.assert_allclose(rows["long_stop"], up["low"])
@@ -401,6 +483,14 @@ def test_opening_range_breakout_rules_power_and_fill_optimism():
             null[(steps, slip)] = bl.trade_statistics(res)["net profit"]
     assert null[(10, 2.0)] < null[(10, 0.0)] and null[(50, 2.0)] < null[(50, 0.0)]
     assert null[(50, 0.0)] < null[(10, 0.0)]
+
+
+def test_contract_sizing():
+    dist = np.array([1.0, 0.0, np.nan, 1e-9])
+    np.testing.assert_array_equal(bl._contracts(None, dist, 50.0, 3), [3, 3, 3, 3])
+    np.testing.assert_array_equal(bl._contracts(0.0, dist, 50.0, 2), [2, 2, 2, 2])        # zero risk: fixed contracts
+    np.testing.assert_array_equal(bl._contracts(1000.0, dist, 50.0, 1), [20, 1, 1, bl.MAX_CONTRACTS])
+    assert bl._contracts(1e18, np.array([0.25]), 5.0, 1).dtype == np.int32
 
 
 def test_bars_from_closes_and_synthetic_generators():

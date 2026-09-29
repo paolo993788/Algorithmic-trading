@@ -263,34 +263,36 @@ def bar_backtest(open_, high, low, close, session, plan, inst):
                 s = offset_stop if has(off) else price_stop
             levels["stop"], levels["target"] = s, (plan["long_target"][d] if pos > 0 else plan["short_target"][d])
 
-        def gap_check():
+        def marketable_check(p):
             s, g = levels["stop"], levels["target"]
             if state["pos"] > 0:
-                if has(s) and O <= s:
-                    close_trade(t, O - slip, 1)
-                elif has(g) and (O >= g if touch_limit else O > g):
-                    close_trade(t, O, 2)
+                if has(s) and p <= s:
+                    close_trade(t, p - slip, 1)
+                elif has(g) and (p >= g if touch_limit else p > g):
+                    close_trade(t, p, 2)
             elif state["pos"] < 0:
-                if has(s) and O >= s:
-                    close_trade(t, O + slip, 1)
-                elif has(g) and (O <= g if touch_limit else O < g):
-                    close_trade(t, O, 2)
+                if has(s) and p >= s:
+                    close_trade(t, p + slip, 1)
+                elif has(g) and (p <= g if touch_limit else p < g):
+                    close_trade(t, p, 2)
 
         arm()
         if (state["pos"] > 0 and plan["long_exit"][d]) or (state["pos"] < 0 and plan["short_exit"][d]):
             close_trade(t, O - side_of(state["pos"]) * slip, 3)
-        gap_check()
+        marketable_check(O)
         touch(O)
         if lt == 1 or (lt == 2 and O >= lp) or (lt == 3 and (O <= lp if touch_limit else O < lp)):
             enter(t, O if lt == 3 else O + slip, 1, lq, plan["long_stop_offset"][d])
             lt = 0
+            touch(O)
             arm()
-            gap_check()
+            marketable_check(O)
         if st == 1 or (st == 2 and O <= sp) or (st == 3 and (O >= sp if touch_limit else O > sp)):
             enter(t, O if st == 3 else O - slip, -1, sq, plan["short_stop_offset"][d])
             st = 0
+            touch(O)
             arm()
-            gap_check()
+            marketable_check(O)
 
         high_first = (H - O) < (O - L)
         pivots = [O, H if high_first else L, L if high_first else H, C]
@@ -301,30 +303,31 @@ def bar_backtest(open_, high, low, close, session, plan, inst):
             up = b > a
             cur = a
             while True:
+                # (distance, rank, kind, level): rank 0 protective stop, 1 stop entry, 2 target, 3 limit entry
                 candidates = []
                 pos, s, g = state["pos"], levels["stop"], levels["target"]
                 if pos > 0:
                     if not up and has(s) and s >= b:
-                        candidates.append((cur - s, 0, s))
+                        candidates.append((cur - s, 0, 0, s))
                     if up and has(g) and (g <= b if touch_limit else g < b):
-                        candidates.append((g - cur, 1, g))
+                        candidates.append((g - cur, 2, 1, g))
                 elif pos < 0:
                     if up and has(s) and s <= b:
-                        candidates.append((s - cur, 0, s))
+                        candidates.append((s - cur, 0, 0, s))
                     if not up and has(g) and (g >= b if touch_limit else g > b):
-                        candidates.append((cur - g, 1, g))
+                        candidates.append((cur - g, 2, 1, g))
                 if lt == 2 and up and lp <= b:
-                    candidates.append((lp - cur, 2, lp))
+                    candidates.append((lp - cur, 1, 2, lp))
                 if lt == 3 and not up and (lp >= b if touch_limit else lp > b):
-                    candidates.append((cur - lp, 2, lp))
+                    candidates.append((cur - lp, 3, 2, lp))
                 if st == 2 and not up and sp >= b:
-                    candidates.append((cur - sp, 3, sp))
+                    candidates.append((cur - sp, 1, 3, sp))
                 if st == 3 and up and (sp <= b if touch_limit else sp < b):
-                    candidates.append((sp - cur, 3, sp))
+                    candidates.append((sp - cur, 3, 3, sp))
                 candidates = [c for c in candidates if c[0] >= 0]
                 if not candidates:
                     break
-                dist, kind, lv = min(candidates, key=lambda c: (c[0], c[1]))
+                dist, rank, kind, lv = min(candidates, key=lambda c: (c[0], c[1]))
                 if kind == 0:
                     close_trade(t, s - side_of(pos) * slip, 1)
                     levels["stop"] = levels["target"] = np.nan
@@ -334,17 +337,21 @@ def bar_backtest(open_, high, low, close, session, plan, inst):
                 elif kind == 2:
                     enter(t, lp + slip if lt == 2 else lp, 1, lq, plan["long_stop_offset"][d])
                     lt = 0
+                    touch(lv)
                     arm()
+                    marketable_check(lv)
                 else:
                     enter(t, sp - slip if st == 2 else sp, -1, sq, plan["short_stop_offset"][d])
                     st = 0
+                    touch(lv)
                     arm()
+                    marketable_check(lv)
                 cur = lv
                 touch(cur)
             touch(b)
 
         last_of_session = t + 1 == n or session[t + 1] != session[t]
-        if state["pos"] != 0 and inst["exit_on_session_close"] and last_of_session and t + 1 < n:
+        if state["pos"] != 0 and inst["exit_on_session_close"] and last_of_session:
             close_trade(t, C - side_of(state["pos"]) * slip, 4)
         if state["pos"] != 0 and t + 1 == n:
             close_trade(t, C, 6)

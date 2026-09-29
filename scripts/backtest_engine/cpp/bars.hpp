@@ -19,7 +19,11 @@
 //   (NinjaTrader's IsFillLimitOnTouch) reaching the price is enough;
 // * within the bar, prices are assumed to move along three segments: O -> H -> L -> C when the open is closer to the
 //   high than to the low, O -> L -> H -> C otherwise. Orders are filled in the sequence their prices are met along
-//   this path, which decides between a stop and a target hit in the same bar.
+//   this path, which decides between a stop and a target hit in the same bar; at the same price a stop (reached) is
+//   filled before a limit (traded through), and an exit before an entry;
+// * a protective stop or target that is already beyond the market when it is attached (at the open, or at an intrabar
+//   fill) is treated as marketable and filled at once at that price, as a platform fills a stop or limit order placed
+//   on the wrong side of the market;
 // * slippage (in ticks, adverse) applies to market and stop fills, not to limit fills;
 // * with `exit_on_session_close` an open position is closed at the close of the last bar of each session;
 // * at most one entry per direction: an entry order in the direction of the open position is ignored; one in the
@@ -124,6 +128,8 @@ inline void validate_orders(const BarOrders& o, std::size_t n) {
             if (type < kNone || type > kLimit) throw std::invalid_argument("order type must be 0 (none), 1 (market), 2 (stop) or 3 (limit)");
             if (type != kNone && qty < 1) throw std::invalid_argument("entry quantities must be positive integers");
             if ((type == kStop || type == kLimit) && !std::isfinite(price)) throw std::invalid_argument("stop and limit entries need a finite price");
+            const double offset = side == 0 ? o.long_stop_offset[t] : o.short_stop_offset[t];
+            if (std::isfinite(offset) && !(offset > 0.0)) throw std::invalid_argument("stop offsets must be positive (NaN for none)");
         }
     }
 }
@@ -233,33 +239,36 @@ inline BarResult bar_backtest(const std::vector<double>& open, const std::vector
             }
             target_lv = pos > 0 ? o.long_target[d] : o.short_target[d];
         };
-        // A held or just-opened position whose stop or target the bar opens beyond is closed at the open.
-        const auto gap_check = [&]() {
+        // A position whose stop or target is at or beyond the market price `p` when the levels are attached (the open
+        // for a held or just-opened position, the fill price for an intrabar entry) is closed at that price.
+        const auto marketable_check = [&](double p) {
             if (pos > 0) {
-                if (has(stop_lv) && O <= stop_lv) close_trade(t, O - slip, kExitStop);
-                else if (has(target_lv) && (inst.limit_on_touch ? O >= target_lv : O > target_lv)) close_trade(t, O, kExitTarget);
+                if (has(stop_lv) && p <= stop_lv) close_trade(t, p - slip, kExitStop);
+                else if (has(target_lv) && (inst.limit_on_touch ? p >= target_lv : p > target_lv)) close_trade(t, p, kExitTarget);
             } else if (pos < 0) {
-                if (has(stop_lv) && O >= stop_lv) close_trade(t, O + slip, kExitStop);
-                else if (has(target_lv) && (inst.limit_on_touch ? O <= target_lv : O < target_lv)) close_trade(t, O, kExitTarget);
+                if (has(stop_lv) && p >= stop_lv) close_trade(t, p + slip, kExitStop);
+                else if (has(target_lv) && (inst.limit_on_touch ? p <= target_lv : p < target_lv)) close_trade(t, p, kExitTarget);
             }
         };
 
         // 1. At the open: market exits, gaps through protective levels, market entries and gapped entry orders.
         arm();
         if ((pos > 0 && o.long_exit[d]) || (pos < 0 && o.short_exit[d])) close_trade(t, O - side_of(pos) * slip, kExitMarket);
-        gap_check();
+        marketable_check(O);
         touch(O);
         if (lt == kMarket || (lt == kStop && O >= lp) || (lt == kLimit && (inst.limit_on_touch ? O <= lp : O < lp))) {
             enter(t, lt == kLimit ? O : O + slip, +1, lq, o.long_stop_offset[d]);
             lt = kNone;
+            touch(O);
             arm();
-            gap_check();
+            marketable_check(O);
         }
         if (st == kMarket || (st == kStop && O <= sp) || (st == kLimit && (inst.limit_on_touch ? O >= sp : O > sp))) {
             enter(t, st == kLimit ? O : O - slip, -1, sq, o.short_stop_offset[d]);
             st = kNone;
+            touch(O);
             arm();
-            gap_check();
+            marketable_check(O);
         }
 
         // 2. Along the intrabar path: the nearest order price ahead is filled first.
@@ -272,27 +281,30 @@ inline BarResult bar_backtest(const std::vector<double>& open, const std::vector
             double cur = a;
             for (;;) {
                 double best_lv = nan, best_dist = 0.0;
-                int best_kind = -1;  // 0 protective stop, 1 target, 2 long entry, 3 short entry
-                const auto consider = [&](double lv, int kind) {
+                int best_kind = -1, best_rank = 0;  // kind: 0 protective stop, 1 target, 2 long entry, 3 short entry
+                // At equal prices a stop (reached) fills before a limit (traded through), an exit before an entry:
+                // rank 0 protective stop, 1 stop entry, 2 target, 3 limit entry.
+                const auto consider = [&](double lv, int kind, int rank) {
                     const double dist = up ? lv - cur : cur - lv;
                     if (!(dist >= 0.0)) return;
-                    if (best_kind < 0 || dist < best_dist || (dist == best_dist && kind < best_kind)) {
+                    if (best_kind < 0 || dist < best_dist || (dist == best_dist && rank < best_rank)) {
                         best_lv = lv;
                         best_dist = dist;
                         best_kind = kind;
+                        best_rank = rank;
                     }
                 };
                 if (pos > 0) {
-                    if (!up && has(stop_lv) && stop_lv >= b) consider(stop_lv, 0);
-                    if (up && has(target_lv) && (inst.limit_on_touch ? target_lv <= b : target_lv < b)) consider(target_lv, 1);
+                    if (!up && has(stop_lv) && stop_lv >= b) consider(stop_lv, 0, 0);
+                    if (up && has(target_lv) && (inst.limit_on_touch ? target_lv <= b : target_lv < b)) consider(target_lv, 1, 2);
                 } else if (pos < 0) {
-                    if (up && has(stop_lv) && stop_lv <= b) consider(stop_lv, 0);
-                    if (!up && has(target_lv) && (inst.limit_on_touch ? target_lv >= b : target_lv > b)) consider(target_lv, 1);
+                    if (up && has(stop_lv) && stop_lv <= b) consider(stop_lv, 0, 0);
+                    if (!up && has(target_lv) && (inst.limit_on_touch ? target_lv >= b : target_lv > b)) consider(target_lv, 1, 2);
                 }
-                if (lt == kStop && up && lp <= b) consider(lp, 2);
-                if (lt == kLimit && !up && (inst.limit_on_touch ? lp >= b : lp > b)) consider(lp, 2);
-                if (st == kStop && !up && sp >= b) consider(sp, 3);
-                if (st == kLimit && up && (inst.limit_on_touch ? sp <= b : sp < b)) consider(sp, 3);
+                if (lt == kStop && up && lp <= b) consider(lp, 2, 1);
+                if (lt == kLimit && !up && (inst.limit_on_touch ? lp >= b : lp > b)) consider(lp, 2, 3);
+                if (st == kStop && !up && sp >= b) consider(sp, 3, 1);
+                if (st == kLimit && up && (inst.limit_on_touch ? sp <= b : sp < b)) consider(sp, 3, 3);
                 if (best_kind < 0) break;
                 if (best_kind == 0) {
                     close_trade(t, stop_lv - side_of(pos) * slip, kExitStop);
@@ -303,11 +315,15 @@ inline BarResult bar_backtest(const std::vector<double>& open, const std::vector
                 } else if (best_kind == 2) {
                     enter(t, lt == kStop ? lp + slip : lp, +1, lq, o.long_stop_offset[d]);
                     lt = kNone;
+                    touch(best_lv);
                     arm();
+                    marketable_check(best_lv);
                 } else {
                     enter(t, st == kStop ? sp - slip : sp, -1, sq, o.short_stop_offset[d]);
                     st = kNone;
+                    touch(best_lv);
                     arm();
+                    marketable_check(best_lv);
                 }
                 cur = best_lv;
                 touch(cur);
@@ -317,8 +333,7 @@ inline BarResult bar_backtest(const std::vector<double>& open, const std::vector
 
         // 3. At the close: session end and end of data.
         const bool last_of_session = t + 1 == n || session[t + 1] != session[t];
-        if (pos != 0 && inst.exit_on_session_close && last_of_session && t + 1 < n)
-            close_trade(t, C - side_of(pos) * slip, kExitSessionClose);
+        if (pos != 0 && inst.exit_on_session_close && last_of_session) close_trade(t, C - side_of(pos) * slip, kExitSessionClose);
         if (pos != 0 && t + 1 == n) close_trade(t, C, kExitEndOfData);
 
         res.pnl[t] = inst.point_value * (pos * C - pos_start * close[t - 1] + cash) - commission;

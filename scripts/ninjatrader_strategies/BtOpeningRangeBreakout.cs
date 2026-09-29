@@ -38,9 +38,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsExitOnSessionCloseStrategy = true;
                 ExitOnSessionCloseSeconds = 30;
                 IsFillLimitOnTouch = false;
-                MaximumBarsLookBack = MaximumBarsLookBack.TwoHundredFiftySix;
+                MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
                 OrderFillResolution = OrderFillResolution.Standard;
-                Slippage = 0.0;
+                Slippage = 0;
+
                 StartBehavior = StartBehavior.WaitUntilFlat;
                 TimeInForce = TimeInForce.Gtc;
                 TraceOrders = false;
@@ -55,9 +56,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
+        private const int MaxContracts = 10000;
+
         protected override void OnBarUpdate()
         {
-            if (BarsInProgress != 0 || !Bars.IsFirstBarOfSession || Position.MarketPosition != MarketPosition.Flat)
+            if (BarsInProgress != 0 || CurrentBar < 1 || !Bars.IsFirstBarOfSession || Position.MarketPosition != MarketPosition.Flat)
                 return;
             if (High[0] - Low[0] < MinRangeTicks * TickSize - 1e-12)
                 return;
@@ -68,7 +71,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double target = RoundToTick(Close[0] + RMultiple * (Close[0] - Low[0]));
                 int contracts = Contracts;
                 if (RiskPerTrade > 0 && Close[0] - stop > 0)
-                    contracts = Math.Max(1, (int)Math.Floor(RiskPerTrade / ((Close[0] - stop) * pointValue)));
+                    contracts = Math.Max(1, (int)Math.Min(Math.Floor(RiskPerTrade / ((Close[0] - stop) * pointValue)), MaxContracts));
                 SetStopLoss("Long", CalculationMode.Price, stop, false);
                 SetProfitTarget("Long", CalculationMode.Price, target);
                 EnterLong(contracts, "Long");
@@ -79,7 +82,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double target = RoundToTick(Close[0] - RMultiple * (High[0] - Close[0]));
                 int contracts = Contracts;
                 if (RiskPerTrade > 0 && stop - Close[0] > 0)
-                    contracts = Math.Max(1, (int)Math.Floor(RiskPerTrade / ((stop - Close[0]) * pointValue)));
+                    contracts = Math.Max(1, (int)Math.Min(Math.Floor(RiskPerTrade / ((stop - Close[0]) * pointValue)), MaxContracts));
                 SetStopLoss("Short", CalculationMode.Price, stop, false);
                 SetProfitTarget("Short", CalculationMode.Price, target);
                 EnterShort(contracts, "Short");

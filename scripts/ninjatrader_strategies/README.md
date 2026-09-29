@@ -15,8 +15,8 @@ with the Python backtest trade by trade.
 The files are **generated**: `python -m backtest_engine.ninjatrader --write scripts/ninjatrader_strategies` rewrites
 them from the templates in `backtest_engine/ninjatrader.py`, and `tests/backtest_engine/test_ninjatrader.py` fails
 when they drift from the templates. Parameters other than the defaults are set in the platform's strategy dialog;
-`ninjatrader.render_strategy(name, params)` writes a file with other defaults (the notebook writes its chosen
-configurations to `outputs/ninjatrader/`).
+`ninjatrader.render_strategy(name, params)` returns the source with other defaults and `write_strategies` writes the
+files (the notebook writes its chosen configurations to `outputs/ninjatrader/`).
 
 ## Requirements
 
@@ -31,8 +31,8 @@ configurations to `outputs/ninjatrader/`).
    (F5). Alternatively copy the `.cs` file into `Documents\NinjaTrader 8\bin\Custom\Strategies\` and compile from
    the editor.
 2. Apply a commission template to the backtest account (*Tools > Commissions*) with the same per-contract rate as
-   the Python `Instrument` (2.05 per contract and side for ES in the notebook). Commissions are not a strategy
-   property in NinjaTrader.
+   the Python `Instrument` (0.62 per contract and side for the micro contract MES used in the notebook, 2.05 for
+   ES). Commissions are not a strategy property in NinjaTrader.
 3. *New > Strategy Analyzer*, choose the instrument, the data series (daily bars for the first, second and fourth
    strategy; 5-minute bars with the session's trading-hours template, for example *US Equities RTH*, for the third),
    the strategy and its parameters, and run the backtest. Leave the strategy's fill settings as generated:
@@ -78,12 +78,22 @@ resolution:
   it (`IsFillLimitOnTouch` makes a touch enough);
 - within the bar the price is assumed to move open, high, low, close when the open is closer to the high than to the
   low, and open, low, high, close otherwise; when a stop and a target are both reached, the first one on that path
-  fills;
+  fills; at the same price a stop (reached) fills before a limit (traded through), and an exit before an entry;
+- a protective stop or target that is already beyond the market when it is attached (at the open, or at an intrabar
+  fill) is marketable and fills at once at that price, as the platform does with an order placed on the wrong side
+  of the market;
 - slippage in ticks is charged on market and stop fills, not on limit fills;
 - `SetStopLoss` / `SetProfitTarget` are attached when the entry fills and can fill on the entry bar; a stop set in
   ticks is measured from the fill price;
 - one entry per direction (`EntriesPerDirection = 1`): an entry in the direction of the open position is ignored,
-  one in the opposite direction reverses it;
+  one in the opposite direction reverses it. The platform's managed approach also ignores an entry order opposite to
+  a working one, even when flat, so the breakout strategy, whose buy stop and sell stop work at the same time, is
+  written with the unmanaged approach (`IsUnmanaged`): it submits, changes and cancels its orders explicitly, keeps
+  them alive for one bar, attaches the ATR stop when an entry fills and resizes a pending reversal order after a
+  stop-out, which is what the engine does implicitly. The other three strategies use the managed approach and, like
+  the Python plans, evaluate only the exit rule while in a position;
+- no order is processed at the first bar of the data (`BarsRequiredToTrade` is at least 1), and the plans place
+  none there either;
 - with `IsExitOnSessionCloseStrategy` the position is closed at the last bar of the session (modelled at that bar's
   close).
 
@@ -96,9 +106,12 @@ zero; ATR stop distances are converted to an integer number of ticks before subm
 ## Verification
 
 - `python -m pytest tests/backtest_engine/test_bars.py tests/backtest_engine/test_ninjatrader.py`: fill rules on
-  hand-built bars, C++ against the Python reference on random order plans, accounting identities, NinjaTrader-exact
-  indicators, no look-ahead of every plan, the export round trip, the trade-list parser and the reconciliation,
-  and the generated files in sync with the templates.
+  hand-built bars (including marketable levels, same-price ties, slippage in the adverse excursion and the session
+  close on the last bar), C++ against the Python reference on random order plans, accounting identities,
+  NinjaTrader-exact indicators, no look-ahead of every plan, the position tracking of the RSI rule, the calendar of
+  the turn-of-month rule around a month-end holiday, contract sizing, the export round trip (prices kept on the tick
+  grid), the trade-list parser (regional formats, missing columns), the reconciliation (exact matches first, time
+  zones) and the generated files in sync with the templates.
 - The C# sources could not be compiled in the development environment (no NinjaTrader installation). They follow
   the NinjaScript strategy skeleton generated by the platform's wizard; report compilation errors as issues.
 - Parity with the platform has to be checked on your installation with `reconcile_trades`: the tests check the

@@ -3,7 +3,7 @@
 //
 // Channel breakout with an ATR stop (Turtle system 1): buy stop one tick above the highest high of the last EntryPeriod
 // bars, sell stop one tick below the lowest low; stop StopAtr ATRs from the fill, then the tighter of that stop and the
-// ExitPeriod-bar channel; an opposite breakout reverses the position.
+// ExitPeriod-bar channel; an opposite breakout reverses the position. Unmanaged approach (both entry stops work at once).
 // The rules and defaults are those of backtest_engine.bars.donchian_breakout_plan; the platform's historical fills
 // (Calculate.OnBarClose, Standard order fill resolution, entry orders alive for one bar, TimeInForce Gtc) follow the
 // model of cpp/bars.hpp, so the trade list of the Strategy Analyzer can be reconciled with the Python backtest by
@@ -26,12 +26,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public class BtDonchianBreakout : Strategy
     {
+        private const int MaxContracts = 10000;
         private ATR atr;
         private MAX entryHigh, exitHigh;
         private MIN entryLow, exitLow;
+        private Order longEntry, shortEntry, protectiveStop;
         private MarketPosition lastPosition = MarketPosition.Flat;
         private double entryStop = double.NaN;  // protective stop fixed at entry: fill -/+ StopAtr ATR (in ticks)
         private int stopTicks = 1;              // ATR stop distance decided at the close before the entry
+        private int contracts = 1;              // contracts of the next entry, decided at the same close
+
+        // The managed approach ignores an entry order in the opposite direction of a working one, so a breakout
+        // strategy with a buy stop and a sell stop working at once uses the unmanaged approach: orders are submitted,
+        // changed and cancelled explicitly, and live for one bar like the plans of backtest_engine.bars.
 
         protected override void OnStateChange()
         {
@@ -45,9 +52,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsExitOnSessionCloseStrategy = false;
                 ExitOnSessionCloseSeconds = 30;
                 IsFillLimitOnTouch = false;
-                MaximumBarsLookBack = MaximumBarsLookBack.TwoHundredFiftySix;
+                MaximumBarsLookBack = MaximumBarsLookBack.Infinite;
                 OrderFillResolution = OrderFillResolution.Standard;
-                Slippage = 0.0;
+                Slippage = 0;
+                IsUnmanaged = true;
+
                 StartBehavior = StartBehavior.WaitUntilFlat;
                 TimeInForce = TimeInForce.Gtc;
                 TraceOrders = false;
@@ -76,6 +85,20 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
+        private static bool IsWorking(Order order)
+        {
+            return order != null && (order.OrderState == OrderState.Working || order.OrderState == OrderState.Accepted
+                || order.OrderState == OrderState.Submitted || order.OrderState == OrderState.ChangePending
+                || order.OrderState == OrderState.ChangeSubmitted || order.OrderState == OrderState.TriggerPending);
+        }
+
+        private void CancelWorking(ref Order order)
+        {
+            if (IsWorking(order))
+                CancelOrder(order);
+            order = null;
+        }
+
         protected override void OnBarUpdate()
         {
             if (BarsInProgress != 0)
@@ -89,6 +112,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                     entryStop = Position.AveragePrice + stopTicks * TickSize;
                 lastPosition = Position.MarketPosition;
             }
+            // Every order lives for one bar: cancel what is still working, then decide again from this close.
+            CancelWorking(ref longEntry);
+            CancelWorking(ref shortEntry);
+            CancelWorking(ref protectiveStop);
             if (CurrentBar < Math.Max(EntryPeriod, AtrPeriod))
                 return;
 
@@ -97,27 +124,53 @@ namespace NinjaTrader.NinjaScript.Strategies
             double longTrail = Math.Min(RoundToTick(exitLow[0]), RoundToTick(Close[0]) - TickSize);   // below the market
             double shortTrail = Math.Max(RoundToTick(exitHigh[0]), RoundToTick(Close[0]) + TickSize); // above the market
             stopTicks = Math.Max(1, (int)Math.Floor(Math.Abs(StopAtr * atr[0] / TickSize) + 0.5 + 1e-9));
-            int contracts = Contracts;
+            contracts = Contracts;
             if (RiskPerTrade > 0)
-                contracts = Math.Max(1, (int)Math.Floor(RiskPerTrade / (stopTicks * TickSize * Instrument.MasterInstrument.PointValue)));
+                contracts = Math.Max(1, (int)Math.Min(Math.Floor(RiskPerTrade / (stopTicks * TickSize * Instrument.MasterInstrument.PointValue)), MaxContracts));
 
             if (Position.MarketPosition == MarketPosition.Long)
-            {
-                SetStopLoss("Long", CalculationMode.Price, Math.Max(entryStop, longTrail), false);
-            }
+                protectiveStop = SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.StopMarket, Position.Quantity, 0, Math.Max(entryStop, longTrail), "", "LongStop");
             else
-            {
-                SetStopLoss("Long", CalculationMode.Ticks, stopTicks, false);
-                EnterLongStopMarket(0, false, contracts, upper, "Long");
-            }
+                longEntry = SubmitOrderUnmanaged(0, OrderAction.Buy, OrderType.StopMarket, contracts + (Position.MarketPosition == MarketPosition.Short ? Position.Quantity : 0), 0, upper, "", "Long");
             if (Position.MarketPosition == MarketPosition.Short)
-            {
-                SetStopLoss("Short", CalculationMode.Price, Math.Min(entryStop, shortTrail), false);
-            }
+                protectiveStop = SubmitOrderUnmanaged(0, OrderAction.BuyToCover, OrderType.StopMarket, Position.Quantity, 0, Math.Min(entryStop, shortTrail), "", "ShortStop");
             else
+                shortEntry = SubmitOrderUnmanaged(0, OrderAction.SellShort, OrderType.StopMarket, contracts + (Position.MarketPosition == MarketPosition.Long ? Position.Quantity : 0), 0, lower, "", "Short");
+        }
+
+        protected override void OnOrderUpdate(Order order, double limitPrice, double stopPrice, int quantity, int filled, double averageFillPrice, OrderState orderState, DateTime time, ErrorCode error, string comment)
+        {
+            // Keep the latest instance of each order (the platform may replace the object it returned).
+            if (order.Name == "Long")
+                longEntry = order;
+            else if (order.Name == "Short")
+                shortEntry = order;
+            else if (order.Name == "LongStop" || order.Name == "ShortStop")
+                protectiveStop = order;
+        }
+
+        protected override void OnExecutionUpdate(Execution execution, string executionId, double price, int quantity, MarketPosition marketPosition, string orderId, DateTime time)
+        {
+            if (execution.Order == null || execution.Order.OrderState != OrderState.Filled)
+                return;
+            string name = execution.Order.Name;
+            if (name == "LongStop" || name == "ShortStop")
             {
-                SetStopLoss("Short", CalculationMode.Ticks, stopTicks, false);
-                EnterShortStopMarket(0, false, contracts, lower, "Short");
+                // Stopped out: a pending reversal order must now open a fresh position of `contracts`.
+                protectiveStop = null;
+                if (IsWorking(longEntry) && longEntry.Quantity != contracts)
+                    ChangeOrder(longEntry, contracts, 0, longEntry.StopPrice);
+                if (IsWorking(shortEntry) && shortEntry.Quantity != contracts)
+                    ChangeOrder(shortEntry, contracts, 0, shortEntry.StopPrice);
+            }
+            else if (name == "Long" || name == "Short")
+            {
+                // A new position or a reversal: the old stop is obsolete; attach the ATR stop from the fill price.
+                CancelWorking(ref protectiveStop);
+                if (name == "Long")
+                    protectiveStop = SubmitOrderUnmanaged(0, OrderAction.Sell, OrderType.StopMarket, contracts, 0, price - stopTicks * TickSize, "", "LongStop");
+                else
+                    protectiveStop = SubmitOrderUnmanaged(0, OrderAction.BuyToCover, OrderType.StopMarket, contracts, 0, price + stopTicks * TickSize, "", "ShortStop");
             }
         }
 

@@ -426,6 +426,43 @@ void test_bar_fill_rules_and_accounting() {
     r = bt::bar_backtest(open, high, low, close, session, o, inst);
     CHECK(r.trades[0].exit_reason == bt::kExitMarket && r.trades[0].exit_bar == 2);
     CHECK_CLOSE(r.trades[0].exit_price, open[2] + 0.25, 1e-12);
+    // A protective level on the wrong side of an intrabar fill is marketable at once: limit entry at 98 on the
+    // path 101 -> 103 -> 97 with a price stop at 99.5 exits at 98 on the entry bar; a target below the fill likewise.
+    o = empty_orders(3);
+    o.long_type[0] = bt::kLimit;
+    o.long_price[0] = 98.0;
+    o.long_stop[0] = 99.5;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.size() == 1 && r.trades[0].exit_reason == bt::kExitStop && r.trades[0].exit_bar == 1);
+    CHECK_CLOSE(r.trades[0].exit_price, 98.0 - 0.25, 1e-12);
+    o.long_stop[0] = std::numeric_limits<double>::quiet_NaN();
+    o.long_target[0] = 97.5;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.size() == 1 && r.trades[0].exit_reason == bt::kExitTarget);
+    CHECK_CLOSE(r.trades[0].exit_price, 98.0, 1e-12);
+    // At the same price on a down segment a sell stop (reached) fills before a buy limit (traded through): the
+    // short opens first and the limit reverses it into a long.
+    o = empty_orders(3);
+    o.long_type[0] = bt::kLimit;
+    o.long_price[0] = 99.0;
+    o.short_type[0] = bt::kStop;
+    o.short_price[0] = 99.0;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.size() == 2 && r.trades[0].side == -1 && r.trades[0].exit_reason == bt::kExitReversal && r.position[1] == 1);
+    // Session close on the last bar of the data keeps its reason and slippage.
+    o = empty_orders(3);
+    o.long_type[1] = bt::kMarket;
+    inst.exit_on_session_close = true;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.size() == 1 && r.trades[0].exit_reason == bt::kExitSessionClose && r.trades[0].exit_bar == 2);
+    CHECK_CLOSE(r.trades[0].exit_price, close[2] - 0.25, 1e-12);
+    inst.exit_on_session_close = false;
+    // MAE of a position entered at the open with slippage includes the open itself.
+    o = empty_orders(3);
+    o.long_type[0] = bt::kMarket;
+    r = bt::bar_backtest(open, high, low, close, session, o, inst);
+    CHECK(r.trades.size() == 1);
+    CHECK(r.trades[0].mae >= 0.25 - 1e-12);
     // Accounting identity on a random sequence of orders: sum of trade P&L = sum of bar P&L; every trade closed.
     const std::size_t n = 2000;
     bt::Xoshiro256 rng(77);
@@ -491,6 +528,9 @@ void test_bar_fill_rules_and_accounting() {
     bad = empty_orders(3);
     bad.long_type[0] = bt::kMarket;
     bad.long_qty[0] = 0;
+    CHECK(throws_invalid_argument([&] { bt::bar_backtest(open, high, low, close, session, bad, inst); }));
+    bad = empty_orders(3);
+    bad.long_stop_offset[0] = -1.0;
     CHECK(throws_invalid_argument([&] { bt::bar_backtest(open, high, low, close, session, bad, inst); }));
     bt::BarInstrument bad_inst;
     bad_inst.slippage_ticks = 1.0;  // without a tick size

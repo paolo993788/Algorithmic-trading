@@ -214,14 +214,17 @@ def plan_to_dict(plan: pd.DataFrame) -> dict:
     return d
 
 
+MAX_CONTRACTS = 10_000   # cap on risk-based sizing, in Python and in the generated NinjaScript
+
+
 def _contracts(risk_per_trade, stop_distance, point_value, qty):
-    """Contracts per trade: fixed `qty`, or the largest integer whose loss at the stop stays within `risk_per_trade`
-    (at least one contract)."""
-    if risk_per_trade is None:
+    """Contracts per trade: fixed `qty` when `risk_per_trade` is None or not positive, otherwise the largest integer
+    whose loss at the stop stays within `risk_per_trade` (at least one contract, at most MAX_CONTRACTS)."""
+    if risk_per_trade is None or not risk_per_trade > 0:
         return np.full(np.shape(stop_distance), int(qty), dtype=np.int32)
     with np.errstate(divide="ignore", invalid="ignore"):
         q = np.floor(risk_per_trade / (np.asarray(stop_distance, dtype=float) * point_value))
-    q = np.where(np.isfinite(q), np.maximum(q, 1.0), 1.0)
+    q = np.where(np.isfinite(q), np.clip(q, 1.0, MAX_CONTRACTS), 1.0)
     return q.astype(np.int32)
 
 
@@ -252,7 +255,7 @@ def donchian_breakout_plan(bars: pd.DataFrame, inst: Instrument, entry_period=20
     plan["short_stop"] = np.maximum(round_to_tick(nt_max(h, exit_period), tick), round_to_tick(c, tick) + tick)
     plan["short_stop_offset"] = offset
     plan["short_qty"] = plan["long_qty"]
-    warmup = max(entry_period, atr_period)
+    warmup = max(1, entry_period, atr_period)
     plan.iloc[:warmup, plan.columns.get_indexer(["long_type", "short_type"])] = 0
     plan.attrs.update(strategy="donchian_breakout", warmup=warmup, entry_period=entry_period, exit_period=exit_period,
                       atr_period=atr_period, stop_atr=stop_atr, qty=qty, risk_per_trade=risk_per_trade)
@@ -261,26 +264,37 @@ def donchian_breakout_plan(bars: pd.DataFrame, inst: Instrument, entry_period=20
 
 def rsi2_plan(bars: pd.DataFrame, inst: Instrument, rsi_period=2, entry_level=10.0, exit_ma=5, trend_ma=200, qty=1,
               short=False) -> pd.DataFrame:
-    """RSI(2) mean reversion (Connors and Alvarez, 2009): buy at the next open when the close is above its
-    `trend_ma`-bar average and RSI(`rsi_period`) is below `entry_level`; sell at the next open once the close is
-    above its `exit_ma`-bar average. With `short`, the mirror image below the trend average (RSI above
-    100 - entry_level; cover when the close is below the `exit_ma` average). Orders start after `trend_ma` bars."""
+    """RSI(2) mean reversion (Connors and Alvarez, 2009): when flat, buy at the next open if the close is above its
+    `trend_ma`-bar average and RSI(`rsi_period`) is below `entry_level`; when long, sell at the next open once the
+    close is above its `exit_ma`-bar average. With `short`, the mirror image below the trend average (RSI above
+    100 - entry_level; cover when the close is below the `exit_ma` average). Orders start after `trend_ma` bars.
+
+    The plan tracks the position like the NinjaScript strategy does (market orders always fill at the next open,
+    so the intended position is the actual one): while in a position only its exit rule is evaluated, so a signal
+    in the opposite direction never reverses the position."""
     check_bars(bars)
     c = bars["close"].to_numpy(dtype=float)
     rsi, trend, fast = nt_rsi(c, rsi_period), nt_sma(c, trend_ma), nt_sma(c, exit_ma)
+    n = len(c)
+    long_type, short_type = np.zeros(n, dtype=np.int32), np.zeros(n, dtype=np.int32)
+    long_exit, short_exit = np.zeros(n, dtype=np.uint8), np.zeros(n, dtype=np.uint8)
+    warmup = max(1, trend_ma, exit_ma, rsi_period)
+    position = 0
+    for t in range(warmup, n):
+        if position > 0:
+            if c[t] > fast[t]:
+                long_exit[t], position = 1, 0
+        elif position < 0:
+            if c[t] < fast[t]:
+                short_exit[t], position = 1, 0
+        elif c[t] > trend[t] and rsi[t] < entry_level:
+            long_type[t], position = ORDER_TYPES["market"], 1
+        elif short and c[t] < trend[t] and rsi[t] > 100.0 - entry_level:
+            short_type[t], position = ORDER_TYPES["market"], -1
     plan = empty_plan(bars.index)
-    enter_long = (c > trend) & (rsi < entry_level)
-    exit_long = c > fast
-    plan["long_type"] = np.where(enter_long, ORDER_TYPES["market"], 0).astype(np.int32)
-    plan["long_qty"] = int(qty)
-    plan["long_exit"] = exit_long.astype(np.uint8)
-    if short:
-        enter_short = (c < trend) & (rsi > 100.0 - entry_level)
-        plan["short_type"] = np.where(enter_short, ORDER_TYPES["market"], 0).astype(np.int32)
-        plan["short_qty"] = int(qty)
-        plan["short_exit"] = (c < fast).astype(np.uint8)
-    warmup = max(trend_ma, exit_ma, rsi_period)
-    plan.iloc[:warmup, plan.columns.get_indexer(["long_type", "short_type", "long_exit", "short_exit"])] = 0
+    plan["long_type"], plan["short_type"] = long_type, short_type
+    plan["long_exit"], plan["short_exit"] = long_exit, short_exit
+    plan["long_qty"] = plan["short_qty"] = int(qty)
     plan.attrs.update(strategy="rsi2", warmup=warmup, rsi_period=rsi_period, entry_level=entry_level, exit_ma=exit_ma,
                       trend_ma=trend_ma, qty=qty, short=short)
     return plan
@@ -310,6 +324,7 @@ def opening_range_breakout_plan(bars: pd.DataFrame, inst: Instrument, session, r
     long_target = round_to_tick(c + r_multiple * (c - l), tick)
     short_stop = round_to_tick(h, tick)
     short_target = round_to_tick(c - r_multiple * (h - c), tick)
+    up[0] = down[0] = False   # the platform processes no order before its second bar (BarsRequiredToTrade = 1)
     plan["long_type"] = np.where(up, ORDER_TYPES["market"], 0).astype(np.int32)
     plan["short_type"] = np.where(down, ORDER_TYPES["market"], 0).astype(np.int32)
     plan["long_qty"] = _contracts(risk_per_trade, c - long_stop, inst.point_value, qty)
@@ -319,7 +334,7 @@ def opening_range_breakout_plan(bars: pd.DataFrame, inst: Instrument, session, r
                               ("short_stop", short_stop, down), ("short_target", short_target, down)):
         s = pd.Series(np.where(mask, values, np.nan), index=bars.index)
         plan[col] = s.groupby(session).ffill().to_numpy()
-    plan.attrs.update(strategy="opening_range_breakout", warmup=0, r_multiple=r_multiple, qty=qty,
+    plan.attrs.update(strategy="opening_range_breakout", warmup=1, r_multiple=r_multiple, qty=qty,
                       risk_per_trade=risk_per_trade, min_range_ticks=min_range_ticks)
     return plan
 
@@ -337,7 +352,8 @@ def turn_of_month_plan(bars: pd.DataFrame, inst: Instrument, days_before=1, days
     Buy at the open of the `days_before`-th weekday before the month end (decided at the previous close by counting
     weekdays, so holidays are ignored: on a month whose last weekdays are holidays the entry can be missed, in which
     case the position is opened at the second bar of the new month) and sell at the open of the bar after the
-    `days_after`-th trading day of the new month.
+    `days_after`-th trading day of the new month. No order is placed at the first bar of the data, which the
+    platform ignores (BarsRequiredToTrade = 1), and its month is not counted as a new month.
     """
     check_bars(bars)
     idx = pd.DatetimeIndex(bars.index)
@@ -355,15 +371,16 @@ def turn_of_month_plan(bars: pd.DataFrame, inst: Instrument, days_before=1, days
             ahead = next_weekday(ahead)
         if next_weekday(ahead).month != d.month and ahead.month == d.month:
             enter[t] = True
-        if bars_in_month[t] == 1 and days_before > 0:
+        if bars_in_month[t] == 1 and t > 0:
             enter[t] = True  # missed entry (holiday at the month end): open the position at the next bar
         if bars_in_month[t] == days_after:
             exit_[t] = True
+    enter[0] = exit_[0] = False
     plan = empty_plan(bars.index)
     plan["long_type"] = np.where(enter & ~exit_, ORDER_TYPES["market"], 0).astype(np.int32)
     plan["long_qty"] = int(qty)
     plan["long_exit"] = exit_.astype(np.uint8)
-    plan.attrs.update(strategy="turn_of_month", warmup=0, days_before=days_before, days_after=days_after, qty=qty)
+    plan.attrs.update(strategy="turn_of_month", warmup=1, days_before=days_before, days_after=days_after, qty=qty)
     return plan
 
 

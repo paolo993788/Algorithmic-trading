@@ -48,6 +48,9 @@ jobs:
       - name: Lint (pyflakes rules)
         run: ruff check --select F scripts tests
       - name: Tests
+        env:
+          # The statsmodels and scikit-learn cross-checks fail instead of being skipped if their package is missing.
+          BACKTEST_ENGINE_REQUIRE_REFERENCES: "1"
         run: python -m pytest tests/backtest_engine -q -rs
 
   cpp:

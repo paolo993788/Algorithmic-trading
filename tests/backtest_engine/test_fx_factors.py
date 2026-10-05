@@ -63,6 +63,35 @@ def test_portfolio_timing_and_costs():
     np.testing.assert_allclose(out["net"].to_numpy(), out["gross"].to_numpy() - 1e-3 * out["turnover"].to_numpy())
 
 
+def test_portfolio_missing_leg_is_not_a_zero_return_and_signal_gaps_carry_positions():
+    idx = pd.date_range("2000-01-31", periods=6, freq="ME")
+    rx = pd.DataFrame({"A": 0.01, "B": 0.01, "C": -0.01, "D": 0.01}, index=idx[1:])
+    w = pd.DataFrame([[0.5, 0.5, -0.5, -0.5]] * 5, index=idx[:5], columns=list("ABCD"))
+    full = fx.portfolio_returns(w, rx, cost_bp=10.0)
+    np.testing.assert_allclose(full["gross"].to_numpy(), 0.01)          # 0.5 (1% + 1%) - 0.5 (-1% + 1%)
+    # A held leg without an excess return: the month is NaN, not 0.5% from a book left net short 0.5.
+    gap = rx.copy()
+    gap.iloc[2, 0] = np.nan
+    out = fx.portfolio_returns(w, gap, cost_bp=10.0)
+    assert np.isnan(out["gross"].iloc[2]) and np.isnan(out["net"].iloc[2])
+    keep = np.arange(len(out)) != 2
+    pd.testing.assert_frame_equal(out[keep], full[keep])
+    assert out["turnover"].iloc[2] == full["turnover"].iloc[2]           # positions and trades are unchanged
+    # A currency that is not held may lack an excess return.
+    flat_a = w.assign(A=0.0, D=0.0)
+    np.testing.assert_allclose(fx.portfolio_returns(flat_a, gap, cost_bp=0.0)["gross"].to_numpy(), 0.01)
+    # A month without a signal (NaN weights) keeps the previous positions, with no turnover (documented).
+    no_signal = w.copy()
+    no_signal.iloc[2] = [np.nan] * 4
+    changed = w.copy()
+    changed.iloc[3:] = [-0.5, -0.5, 0.5, 0.5]                          # reversed from month 4 on
+    no_signal.iloc[3:] = changed.iloc[3:]
+    a = fx.portfolio_returns(no_signal, rx, cost_bp=10.0)
+    b = fx.portfolio_returns(changed, rx, cost_bp=10.0)
+    pd.testing.assert_frame_equal(a, b)
+    np.testing.assert_allclose(a["turnover"].to_numpy(), [2.0, 0.0, 0.0, 4.0, 0.0])
+
+
 def test_newey_west_matches_white_without_lags_and_ols_coefficients():
     rng = np.random.default_rng(2)
     x = rng.standard_normal(500)

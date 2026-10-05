@@ -117,6 +117,16 @@ int main(int argc, char** argv) {
         }, checksum);
         row("tsmom_grid", mom_size, threads, ms, checksum);
     }
+    // Horizon ensemble (four look-backs) with the portfolio volatility target of the momentum notebook (serial kernel).
+    const std::vector<int> ensemble_lookbacks = {21, 63, 126, 252};
+    ms = median_ms(repeats, [&] {
+        const bt::MomentumResult r = bt::tsmom_ensemble_backtest(prices, n_mom, k_mom, ensemble_lookbacks, 60.0, 0.4, 5.0,
+                                                                 0.0005, 1, 252.0, 0.10, 60.0, 3.0);
+        double s = 0.0;
+        for (double v : r.returns) s += v;
+        return s;
+    }, checksum);
+    row("tsmom_ensemble_backtest", std::to_string(n_mom) + " x 8 assets, 4 horizons, vol target", 1, ms, checksum);
 
     // Joint stationary bootstrap of a 6,692 x 104 grid (data-snooping tests), 5,000 replicates.
     const std::size_t n_boot_obs = quick ? 300 : 6692, k_boot = quick ? 10 : 104;

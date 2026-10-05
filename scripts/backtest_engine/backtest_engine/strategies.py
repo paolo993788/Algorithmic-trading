@@ -100,9 +100,19 @@ def tsmom_grid(prices: pd.DataFrame, lookbacks, coms, target_vol=0.40, max_lever
 
 
 def probability_of_backtest_overfitting(returns: pd.DataFrame, S=16, n_threads=0) -> dict:
-    """CSCV of Bailey, Borwein, Lopez de Prado and Zhu (2017) on a (time x configuration) frame."""
+    """CSCV of Bailey, Borwein, Lopez de Prado and Zhu (2017) on a (time x configuration) frame.
+
+    Every value must be finite: a NaN would give its configuration a Sharpe ratio of zero in every split that contains
+    it, so missing returns raise ValueError (drop the rows, e.g. `returns.dropna()`, or fill them first).
+    """
+    values = returns.to_numpy(dtype=float)
+    bad = ~np.isfinite(values)
+    if bad.any():
+        columns = [str(c) for c in np.asarray(returns.columns)[bad.any(axis=0)]]
+        raise ValueError(f"returns must be finite: {int(bad.sum())} NaN or infinite values in {len(columns)} "
+                         f"configuration(s), e.g. {columns[:3]}; drop or fill missing returns first")
     core = require_cpp()
-    return core.cscv(returns.to_numpy(dtype=float), S, n_threads)
+    return core.cscv(values, S, n_threads)
 
 
 # --------------------------------------------------------------------------- robust variants

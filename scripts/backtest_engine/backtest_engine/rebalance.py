@@ -25,16 +25,34 @@ import numpy as np
 import pandas as pd
 
 
-def rebalance_dates(index: pd.DatetimeIndex, frequency: str = "ME") -> pd.DatetimeIndex:
+def rebalance_dates(index: pd.DatetimeIndex, frequency: str = "ME", holidays=None) -> pd.DatetimeIndex:
     """Last trading day of each complete period of `frequency` ("ME" months, "QE" quarters, "W-FRI" weeks).
 
-    The final period counts only if the data reach within three calendar days of its end (weekends and holidays);
-    otherwise its last date is not a period end and is dropped.
+    Every period but the last is complete, since the data continue after it. The final period counts only if the data
+    reach its last business day, so that a sample ending in mid-period never turns its last date into a decision date:
+
+    * with `holidays` (dates, e.g. the exchange's closures), business days are the weekdays not in the list, and the
+      last observation must be the period's last business day;
+    * without it, business days are Monday to Friday and a missing last weekday cannot be told apart from a period
+      still in progress. Monthly and quarterly periods then tolerate one missing weekday at the end (a holiday on the
+      last weekday: Memorial Day on 31 May 2021, Good Friday on 29 March 2024 at the end of a quarter); weekly
+      periods tolerate none, so a final week whose Friday is a holiday (Good Friday) counts only when `holidays`
+      lists that day. A day is a small part of a month but a fifth of a week, hence the different tolerances.
     """
     periods = index.to_period(frequency.replace("ME", "M").replace("QE", "Q"))
     last = pd.Series(index, index=index).groupby(periods).max()
-    if len(last) and (last.index[-1].end_time.normalize() - last.iloc[-1]).days > 3:
-        last = last.iloc[:-1]
+    if len(last):
+        period = last.index[-1]
+        if holidays is None:
+            business = pd.offsets.BDay()
+            allowed = 0 if period.freqstr.startswith("W") else 1
+        else:
+            business = pd.offsets.CustomBusinessDay(holidays=pd.DatetimeIndex(holidays).normalize())
+            allowed = 0
+        final_day = business.rollback(period.end_time.normalize())    # last business day of the final period
+        unobserved = pd.date_range(last.iloc[-1].normalize() + pd.Timedelta(days=1), final_day, freq=business)
+        if len(unobserved) > allowed:
+            last = last.iloc[:-1]
     return pd.DatetimeIndex(last.to_numpy())
 
 

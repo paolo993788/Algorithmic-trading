@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "parallel.hpp"
@@ -26,21 +27,31 @@ struct CscvResult {
     double pbo = 0.0;                     // share of combinations with lambda_c <= 0
 };
 
+// Sharpe ratio (per period) from the sum and the sum of squares of n returns; 0 for a series without dispersion.
+// A NaN moment also gives 0, so the entry points that call it reject non-finite returns first (check_finite).
 inline double sharpe_from_moments(double sum, double sum_sq, double n) {
     const double mean = sum / n;
     const double var = (sum_sq - n * mean * mean) / (n - 1.0);
     return var > 1e-300 ? mean / std::sqrt(var) : 0.0;
 }
 
-// returns: (time, strategy) row-major matrix. The time axis is split into S
-// contiguous blocks of equal length (the oldest observations that do not fill
-// a block are dropped); every choice of S/2 blocks forms the in-sample set and
-// the complement the out-of-sample set.
+// Throws std::invalid_argument if any value is NaN or infinite: a missing return must be filled or dropped by the
+// caller, not silently turned into a zero Sharpe ratio.
+inline void check_finite(const std::vector<double>& values, const char* what) {
+    for (double v : values)
+        if (!std::isfinite(v)) throw std::invalid_argument(std::string(what) + " must be finite (fill or drop missing values first)");
+}
+
+// returns: (time, strategy) row-major matrix of finite values. The time axis is
+// split into S contiguous blocks of equal length (the oldest observations that do
+// not fill a block are dropped); every choice of S/2 blocks forms the in-sample
+// set and the complement the out-of-sample set.
 inline CscvResult cscv(const std::vector<double>& returns, std::size_t n_obs, std::size_t n_strategies, int S,
                        int n_threads = 0) {
     if (returns.size() != n_obs * n_strategies) throw std::invalid_argument("returns must have n_obs * n_strategies values");
     if (S < 2 || S % 2 != 0 || S > 24) throw std::invalid_argument("S must be even and between 2 and 24");
     if (n_strategies < 2) throw std::invalid_argument("need at least two strategies");
+    check_finite(returns, "returns");
     const std::size_t block = n_obs / static_cast<std::size_t>(S);
     if (block < 2) throw std::invalid_argument("too few observations for the number of blocks");
     const std::size_t offset = n_obs - block * S;
@@ -131,11 +142,13 @@ inline void check_bootstrap_args(std::size_t n, double mean_block, int n_boot) {
     if (n < 2 || !(mean_block >= 1.0) || n_boot < 1) throw std::invalid_argument("invalid bootstrap parameters");
 }
 
-// Annualised Sharpe ratios of `n_boot` stationary-bootstrap resamples (replicate b uses stream (seed, b)).
+// Annualised Sharpe ratios of `n_boot` stationary-bootstrap resamples of the finite returns `r` (replicate b uses
+// stream (seed, b)).
 inline std::vector<double> stationary_bootstrap_sharpe(const std::vector<double>& r, double mean_block, int n_boot,
                                                        std::uint64_t seed, double periods_per_year, int n_threads = 0) {
     const std::size_t n = r.size();
     check_bootstrap_args(n, mean_block, n_boot);
+    check_finite(r, "returns");
     std::vector<double> out(static_cast<std::size_t>(n_boot));
     parallel_for(out.size(), n_threads, [&](std::size_t b) {
         StationaryIndices indices(n, mean_block, seed, b);

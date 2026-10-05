@@ -9,17 +9,25 @@ the 3-month Treasury bill):
   dollars at the Federal Reserve H.10 rate (DEXJPUS). **Price indices**: dividends (about 1-2% a year) are missing,
   which understates equity returns and favours equity-light allocations when means are compared.
 * Currencies EUR, GBP, JPY, CHF, CAD, AUD against the dollar (H.10 noon rates: DEXUSEU, DEXUSUK, DEXJPUS, DEXSZUS,
-  DEXCAUS, DEXUSAL): the excess return of a long forward position, approximated by the spot return plus the interest
-  differential accrued over the interval, (i_foreign - i_USD) days / 360, with the OECD 3-month interbank rates
-  (monthly averages; the average of the previous month is used, so it was known at the time). The Swiss rate starts in
-  July 1999, so the universe starts at the end of August 1999.
+  DEXCAUS, DEXUSAL; JPY, CHF and CAD are quoted per dollar and inverted): the excess return of a long forward position,
+  approximated by the spot return plus the interest differential accrued over the interval, (i_foreign - i_USD)
+  days / 360, with the OECD 3-month interbank rates (monthly averages, which FRED dates on the first day of the
+  month). Rate timing: each monthly average is moved to the end of its month, lagged by one month and carried forward
+  over the daily calendar, so it enters the accrual on the last calendar day of the following month (the next US
+  business day if that day is not one) and is used for one month. A day of month m therefore accrues the average of
+  month m-2, and the last calendar day of a month already that of month m-1. The lag is conservative: an average
+  enters about one month after the end of its own month, which leaves room for its publication (no look-ahead), at
+  the cost of a differential that is up to two months old. The Swiss rate starts in July 1999, whose average first
+  accrues on 31 August 1999, so the universe starts on that day.
 * Cash: 3-month Treasury bill, secondary market (FRED DTB3, discount basis), accrued as y days / 360 from the
   previous day's rate.
 
 The calendar is that of the H.15 10-year yield (US business days). Series that do not trade on a US business day
 (Tokyo holidays, the ECB-less H.10 gaps) are carried forward for at most five days, so their move shows up on the
-next available day; Tokyo also closes before New York, which lowers measured same-day correlations with US assets.
-These are research proxies for futures and forwards, not the returns of tradable contracts.
+next available day; a longer gap leaves the asset's return missing on the remaining days of the gap and on the first
+day after it, and those days are dropped from the universe (for every asset). Tokyo also closes before New York,
+which lowers measured same-day correlations with US assets. These are research proxies for futures and forwards, not
+the returns of tradable contracts.
 """
 
 from __future__ import annotations
@@ -61,12 +69,16 @@ def load_multi_asset_excess_returns(start="1999-01-04", end="2025-12-31") -> pd.
                                end=end).resample("ME").last()
     rates = pd.DataFrame({c: rates_raw[RATE_SERIES[c]] for c in ["USD", *FX_SERIES]})
     rates["JPY"] = rates["JPY"].fillna(rates_raw[JPY_FALLBACK])
-    known = rates.shift(1).reindex(calendar, method="ffill")          # previous month's average, known in month m
+    # Average of month m stamped at the end of m, lagged to the end of m + 1 and carried forward: days of month m + 2
+    # (and the last day of m + 1) accrue it; see the module docstring.
+    known = rates.shift(1).reindex(calendar, method="ffill")
     out = {}
+    # fill_method=None: a price still missing after the five-day carry-forward gives a missing return (the pandas 3
+    # default), never a zero return over the gap.
     for label, p in prices.items():
-        out[label] = p.pct_change() - rf
+        out[label] = p.pct_change(fill_method=None) - rf
     for c, p in fx_prices.items():
-        out[c] = p.pct_change() + (known[c] - known["USD"]) / 100.0 * days / 360.0
+        out[c] = p.pct_change(fill_method=None) + (known[c] - known["USD"]) / 100.0 * days / 360.0
     excess = pd.DataFrame(out)[list(ASSET_CLASS)].loc[start:end].dropna()
     excess.attrs["source"] = ("Federal Reserve H.15 (Treasury yields, T-bill) and H.10 (exchange rates), Nasdaq "
                               "Composite, Nikkei 225, OECD 3-month interbank rates; all via FRED")

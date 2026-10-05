@@ -142,10 +142,21 @@ def cross_sectional_weights(signal: pd.DataFrame, n=3, scheme="equal") -> pd.Dat
 
 def portfolio_returns(weights: pd.DataFrame, rx: pd.DataFrame, cost_bp=3.0) -> pd.DataFrame:
     """Monthly returns of positions set at the end of month t and held over month t+1, net of a cost of
-    `cost_bp` basis points per unit of turnover charged at each rebalancing."""
+    `cost_bp` basis points per unit of turnover charged at each rebalancing.
+
+    * Months without a signal (a row of NaN weights, e.g. fewer than 2n valid signals) keep the previous
+      positions: weights are carried forward until the next valid row, with no turnover.
+    * A month in which a held position (non-zero weight) has no excess return (a gap or the end of an
+      interest-rate series makes rx NaN) has NaN gross and net returns rather than a zero return for that
+      leg, which would leave the book silently net long or short; the month is then missing from any
+      statistic computed with dropna. Currencies with a zero weight may have a missing excess return.
+    """
     w = weights.reindex(rx.index.union(weights.index)).ffill()
     held = w.shift(1).reindex(rx.index)
-    gross = (held * rx).sum(axis=1, min_count=1)
+    leg_rx = rx.reindex(columns=held.columns)
+    gross = (held * leg_rx).sum(axis=1, min_count=1)
+    missing_leg = (held.fillna(0.0).ne(0.0) & leg_rx.isna()).any(axis=1)
+    gross = gross.mask(missing_leg)
     filled = w.fillna(0.0)
     turnover = filled.diff().fillna(filled).abs().sum(axis=1).shift(1).reindex(rx.index)   # entry trade included
     net = gross - cost_bp / 1e4 * turnover

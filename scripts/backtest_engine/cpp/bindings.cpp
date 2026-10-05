@@ -5,6 +5,7 @@
 #include <pybind11/stl.h>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "bars.hpp"
@@ -21,10 +22,23 @@ using ByteArray = py::array_t<unsigned char, py::array::c_style | py::array::for
 
 namespace {
 
+// Values of an array of any shape in C order: for matrices whose shape matrix_shape() has already checked.
 std::vector<double> to_vector(const DoubleArray& a) {
     const auto buf = a.request();
     const double* ptr = static_cast<const double*>(buf.ptr);
     return std::vector<double>(ptr, ptr + buf.size);
+}
+
+// Vector arguments must be 1-D: an array of another rank (a column vector, a matrix, a scalar) is rejected with
+// ValueError instead of being flattened silently.
+void require_1d(const py::array& a, const char* name) {
+    if (a.ndim() != 1)
+        throw py::value_error(std::string(name) + " must be a 1-D array (got " + std::to_string(a.ndim()) + " dimensions)");
+}
+
+std::vector<double> to_vector(const DoubleArray& a, const char* name) {
+    require_1d(a, name);
+    return to_vector(a);
 }
 
 py::array_t<double> to_array(const std::vector<double>& v) {
@@ -45,7 +59,8 @@ std::pair<std::size_t, std::size_t> matrix_shape(const DoubleArray& a) {
 }
 
 template <class T, class A>
-std::vector<T> to_vector_of(const A& a) {
+std::vector<T> to_vector_of(const A& a, const char* name) {
+    require_1d(a, name);
     const auto buf = a.request();
     const T* ptr = static_cast<const T*>(buf.ptr);
     return std::vector<T>(ptr, ptr + buf.size);
@@ -53,20 +68,20 @@ std::vector<T> to_vector_of(const A& a) {
 
 bt::BarOrders orders_from_dict(const py::dict& plan) {
     bt::BarOrders o;
-    o.long_type = to_vector_of<int>(plan["long_type"].cast<IntArray>());
-    o.short_type = to_vector_of<int>(plan["short_type"].cast<IntArray>());
-    o.long_price = to_vector(plan["long_price"].cast<DoubleArray>());
-    o.short_price = to_vector(plan["short_price"].cast<DoubleArray>());
-    o.long_qty = to_vector_of<int>(plan["long_qty"].cast<IntArray>());
-    o.short_qty = to_vector_of<int>(plan["short_qty"].cast<IntArray>());
-    o.long_stop = to_vector(plan["long_stop"].cast<DoubleArray>());
-    o.long_target = to_vector(plan["long_target"].cast<DoubleArray>());
-    o.short_stop = to_vector(plan["short_stop"].cast<DoubleArray>());
-    o.short_target = to_vector(plan["short_target"].cast<DoubleArray>());
-    o.long_stop_offset = to_vector(plan["long_stop_offset"].cast<DoubleArray>());
-    o.short_stop_offset = to_vector(plan["short_stop_offset"].cast<DoubleArray>());
-    o.long_exit = to_vector_of<unsigned char>(plan["long_exit"].cast<ByteArray>());
-    o.short_exit = to_vector_of<unsigned char>(plan["short_exit"].cast<ByteArray>());
+    o.long_type = to_vector_of<int>(plan["long_type"].cast<IntArray>(), "plan['long_type']");
+    o.short_type = to_vector_of<int>(plan["short_type"].cast<IntArray>(), "plan['short_type']");
+    o.long_price = to_vector(plan["long_price"].cast<DoubleArray>(), "plan['long_price']");
+    o.short_price = to_vector(plan["short_price"].cast<DoubleArray>(), "plan['short_price']");
+    o.long_qty = to_vector_of<int>(plan["long_qty"].cast<IntArray>(), "plan['long_qty']");
+    o.short_qty = to_vector_of<int>(plan["short_qty"].cast<IntArray>(), "plan['short_qty']");
+    o.long_stop = to_vector(plan["long_stop"].cast<DoubleArray>(), "plan['long_stop']");
+    o.long_target = to_vector(plan["long_target"].cast<DoubleArray>(), "plan['long_target']");
+    o.short_stop = to_vector(plan["short_stop"].cast<DoubleArray>(), "plan['short_stop']");
+    o.short_target = to_vector(plan["short_target"].cast<DoubleArray>(), "plan['short_target']");
+    o.long_stop_offset = to_vector(plan["long_stop_offset"].cast<DoubleArray>(), "plan['long_stop_offset']");
+    o.short_stop_offset = to_vector(plan["short_stop_offset"].cast<DoubleArray>(), "plan['short_stop_offset']");
+    o.long_exit = to_vector_of<unsigned char>(plan["long_exit"].cast<ByteArray>(), "plan['long_exit']");
+    o.short_exit = to_vector_of<unsigned char>(plan["short_exit"].cast<ByteArray>(), "plan['short_exit']");
     return o;
 }
 
@@ -137,7 +152,7 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "kalman_regression",
         [](const DoubleArray& y, const DoubleArray& x, double delta, double obs_var, double init_var, std::size_t burn_in) {
-            const auto yv = to_vector(y), xv = to_vector(x);
+            const auto yv = to_vector(y, "y"), xv = to_vector(x, "x");
             bt::KalmanResult k;
             {
                 py::gil_scoped_release release;
@@ -160,7 +175,8 @@ PYBIND11_MODULE(_core, m) {
         "pairs_backtest",
         [](const DoubleArray& y, const DoubleArray& x, const DoubleArray& z, const DoubleArray& hedge, double entry,
            double exit, double stop, double cost_per_unit, int lag, std::size_t start) {
-            const auto yv = to_vector(y), xv = to_vector(x), zv = to_vector(z), hv = to_vector(hedge);
+            const auto yv = to_vector(y, "y"), xv = to_vector(x, "x"), zv = to_vector(z, "z"),
+                       hv = to_vector(hedge, "hedge");
             const bt::PairsResult r = bt::pairs_backtest(yv, xv, zv, hv, entry, exit, stop, cost_per_unit, lag, start);
             py::dict d;
             d["pnl"] = to_array(r.pnl);
@@ -178,7 +194,8 @@ PYBIND11_MODULE(_core, m) {
         "pairs_grid",
         [](const DoubleArray& y, const DoubleArray& x, const DoubleArray& deltas, double obs_var, const DoubleArray& entries,
            const DoubleArray& exits, double stop, double cost_per_unit, int lag, std::size_t start, int n_threads) {
-            const auto yv = to_vector(y), xv = to_vector(x), dv = to_vector(deltas), ev = to_vector(entries), xv2 = to_vector(exits);
+            const auto yv = to_vector(y, "y"), xv = to_vector(x, "x"), dv = to_vector(deltas, "deltas"),
+                       ev = to_vector(entries, "entries"), xv2 = to_vector(exits, "exits");
             bt::PairsGrid g;
             {
                 py::gil_scoped_release release;
@@ -249,7 +266,7 @@ PYBIND11_MODULE(_core, m) {
            double max_leverage, double cost, int lag, double periods_per_year, int n_threads) {
             const auto [n_obs, n_assets] = matrix_shape(prices);
             const auto p = to_vector(prices);
-            const auto c = to_vector(coms);
+            const auto c = to_vector(coms, "coms");
             bt::MomentumGrid g;
             {
                 py::gil_scoped_release release;
@@ -270,8 +287,9 @@ PYBIND11_MODULE(_core, m) {
         "bar_backtest",
         [](const DoubleArray& open, const DoubleArray& high, const DoubleArray& low, const DoubleArray& close,
            const Int64Array& session, const py::dict& plan, const py::dict& instrument) {
-            const auto o = to_vector(open), h = to_vector(high), l = to_vector(low), c = to_vector(close);
-            const auto s = to_vector_of<std::int64_t>(session);
+            const auto o = to_vector(open, "open"), h = to_vector(high, "high"), l = to_vector(low, "low"),
+                       c = to_vector(close, "close");
+            const auto s = to_vector_of<std::int64_t>(session, "session");
             const bt::BarOrders orders = orders_from_dict(plan);
             const bt::BarInstrument inst = instrument_from_dict(instrument);
             bt::BarResult r;
@@ -289,8 +307,9 @@ PYBIND11_MODULE(_core, m) {
         "bar_backtest_many",
         [](const DoubleArray& open, const DoubleArray& high, const DoubleArray& low, const DoubleArray& close,
            const Int64Array& session, const std::vector<py::dict>& plans, const py::dict& instrument, int n_threads) {
-            const auto o = to_vector(open), h = to_vector(high), l = to_vector(low), c = to_vector(close);
-            const auto s = to_vector_of<std::int64_t>(session);
+            const auto o = to_vector(open, "open"), h = to_vector(high, "high"), l = to_vector(low, "low"),
+                       c = to_vector(close, "close");
+            const auto s = to_vector_of<std::int64_t>(session, "session");
             std::vector<bt::BarOrders> orders;
             orders.reserve(plans.size());
             for (const py::dict& p : plans) orders.push_back(orders_from_dict(p));
@@ -343,7 +362,7 @@ PYBIND11_MODULE(_core, m) {
         "stationary_bootstrap_sharpe",
         [](const DoubleArray& returns, double mean_block, int n_boot, std::uint64_t seed, double periods_per_year,
            int n_threads) {
-            const auto r = to_vector(returns);
+            const auto r = to_vector(returns, "returns");
             std::vector<double> out;
             {
                 py::gil_scoped_release release;

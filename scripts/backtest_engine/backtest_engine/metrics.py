@@ -94,7 +94,16 @@ def deflated_sharpe_ratio(returns, trial_sharpes, n_trials=None):
 
 
 def bootstrap_sharpe(returns, mean_block=20.0, n_boot=10_000, seed=12345, periods_per_year=252.0, n_threads=0):
-    """Stationary-bootstrap distribution of the annualised Sharpe ratio (C++ engine)."""
+    """Stationary-bootstrap distribution of the annualised Sharpe ratio (C++ engine).
+
+    `returns` must be a one-dimensional series of finite values: a NaN would make every replicate that draws it a
+    Sharpe ratio of exactly zero, so missing returns raise ValueError and must be dropped or filled by the caller.
+    """
+    r = np.asarray(returns, dtype=float)
+    if r.ndim != 1:
+        raise ValueError("returns must be one-dimensional")
+    if not np.isfinite(r).all():
+        raise ValueError(f"returns must be finite ({int(np.count_nonzero(~np.isfinite(r)))} NaN or infinite values); "
+                         "drop or fill missing returns first")
     core = require_cpp()
-    return core.stationary_bootstrap_sharpe(np.asarray(returns, dtype=float), mean_block, n_boot, seed,
-                                            periods_per_year, n_threads)
+    return core.stationary_bootstrap_sharpe(r, mean_block, n_boot, seed, periods_per_year, n_threads)

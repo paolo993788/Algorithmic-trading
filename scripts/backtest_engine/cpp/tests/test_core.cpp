@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
@@ -324,6 +325,71 @@ void test_momentum_accounting_lag_and_grid() {
     CHECK(throws_invalid_argument([&] { bt::tsmom_backtest(p, n - 1, k, 60, 20.0, 0.4, max_lev, cost, 1, 252.0); }));
 }
 
+void test_momentum_ensemble() {
+    const std::size_t n = 700, k = 4;
+    std::vector<double> p = random_walk_prices(n, k, 37);
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (std::size_t t = 0; t < 150; ++t) p[t * k + 1] = nan;    // an asset that starts later
+    for (std::size_t t = 400; t < 405; ++t) p[t * k + 2] = nan;  // a mid-sample gap
+    const double cost = 0.001, max_lev = 2.0, max_scale = 3.0;
+    // A single look-back without a portfolio target is the single-horizon backtest, bit for bit.
+    const bt::MomentumResult plain = bt::tsmom_backtest(p, n, k, 60, 20.0, 0.4, max_lev, cost, 1, 252.0, true);
+    const bt::MomentumResult one =
+        bt::tsmom_ensemble_backtest(p, n, k, {60}, 20.0, 0.4, max_lev, cost, 1, 252.0, 0.0, 30.0, max_scale, true);
+    CHECK(one.returns == plain.returns);
+    CHECK(one.weights == plain.weights);
+    // With a portfolio volatility target: return = held weights x asset returns - cost x turnover, gross exposure
+    // within max_leverage x max_scale, and the target rescales each day's weights by one common factor in
+    // (0, max_scale] (it never changes the relative positions).
+    const std::vector<int> lookbacks = {20, 60, 120};
+    const bt::MomentumResult r =
+        bt::tsmom_ensemble_backtest(p, n, k, lookbacks, 20.0, 0.4, max_lev, cost, 1, 252.0, 0.10, 30.0, max_scale, true);
+    const bt::MomentumResult u =
+        bt::tsmom_ensemble_backtest(p, n, k, lookbacks, 20.0, 0.4, max_lev, cost, 1, 252.0, 0.0, 30.0, max_scale, true);
+    std::size_t scaled_days = 0;
+    for (std::size_t t = 1; t < n; ++t) {
+        double gross = 0.0, turnover = 0.0, exposure = 0.0, factor = 0.0;
+        bool common = true;
+        for (std::size_t i = 0; i < k; ++i) {
+            const double p0 = p[(t - 1) * k + i], p1 = p[t * k + i];
+            const double ret = std::isfinite(p0) && std::isfinite(p1) ? p1 / p0 - 1.0 : 0.0;  // missing: no return
+            gross += r.weights[(t - 1) * k + i] * ret;
+            turnover += std::abs(r.weights[t * k + i] - r.weights[(t - 1) * k + i]);
+            exposure += std::abs(r.weights[t * k + i]);
+            const double w_u = u.weights[t * k + i], w_s = r.weights[t * k + i];
+            if (w_u == 0.0) {
+                common = common && w_s == 0.0;
+            } else if (factor == 0.0) {
+                factor = w_s / w_u;
+            } else {
+                common = common && std::abs(w_s / w_u - factor) <= 1e-12 * factor;
+            }
+        }
+        CHECK_CLOSE(r.returns[t], gross - cost * turnover, 1e-12);
+        CHECK_CLOSE(r.gross[t], exposure, 1e-12);
+        CHECK(exposure <= max_lev * max_scale + 1e-12);
+        CHECK(common && factor >= 0.0 && factor <= max_scale + 1e-12);
+        scaled_days += factor > 0.0 && factor != 1.0 ? 1 : 0;
+    }
+    CHECK(scaled_days > 300);  // the target is active once 2 x portfolio_com returns are available
+    // No look-ahead: changing prices from day m on leaves the returns before m and the weights held up to m unchanged.
+    const std::size_t m = 500;
+    std::vector<double> shocked = p;
+    for (std::size_t t = m; t < n; ++t)
+        for (std::size_t i = 0; i < k; ++i) shocked[t * k + i] *= 1.3 + 0.1 * static_cast<double>(i);
+    const bt::MomentumResult s =
+        bt::tsmom_ensemble_backtest(shocked, n, k, lookbacks, 20.0, 0.4, max_lev, cost, 1, 252.0, 0.10, 30.0, max_scale, true);
+    CHECK(std::equal(s.returns.begin(), s.returns.begin() + static_cast<std::ptrdiff_t>(m), r.returns.begin()));
+    CHECK(std::equal(s.weights.begin(), s.weights.begin() + static_cast<std::ptrdiff_t>((m + 1) * k), r.weights.begin()));
+    CHECK(s.weights != r.weights);
+    CHECK(throws_invalid_argument([&] {
+        bt::tsmom_ensemble_backtest(p, n, k, {}, 20.0, 0.4, max_lev, cost, 1, 252.0, 0.10, 30.0, max_scale);
+    }));
+    CHECK(throws_invalid_argument([&] {
+        bt::tsmom_ensemble_backtest(p, n, k, {0, 60}, 20.0, 0.4, max_lev, cost, 1, 252.0, 0.10, 30.0, max_scale);
+    }));
+}
+
 
 // ------------------------------------------------------------------------------------------------ bar engine
 
@@ -586,6 +652,12 @@ void test_stationary_bootstrap() {
     CHECK_CLOSE(mean_boot, sample, 0.15 * std::abs(sample) + 0.1);
     CHECK(throws_invalid_argument([&] { bt::stationary_bootstrap_means(x, n, k, 0.5, 10, 1); }));
     CHECK(throws_invalid_argument([&] { bt::stationary_bootstrap_indices(1, 5.0, 1, 0, 10); }));
+    // A missing or infinite return is rejected, not turned into replicates with a zero Sharpe ratio.
+    for (double bad : {std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+        std::vector<double> with_bad = r;
+        with_bad[1234] = bad;
+        CHECK(throws_invalid_argument([&] { bt::stationary_bootstrap_sharpe(with_bad, 10.0, 10, 5, 252.0, 1); }));
+    }
 }
 
 void test_sharpe_and_cscv() {
@@ -615,6 +687,12 @@ void test_sharpe_and_cscv() {
     CHECK(c1.logit == c.logit);
     CHECK(throws_invalid_argument([&] { bt::cscv(ret, n, k, 7); }));
     CHECK(throws_invalid_argument([&] { bt::cscv(ret, n, 1, 8); }));
+    // A single missing return of the dominant strategy would otherwise score it 0 in every split containing it.
+    for (double bad : {std::numeric_limits<double>::quiet_NaN(), -std::numeric_limits<double>::infinity()}) {
+        std::vector<double> with_bad = ret;
+        with_bad[700 * k + 3] = bad;
+        CHECK(throws_invalid_argument([&] { bt::cscv(with_bad, n, k, 8, 1); }));
+    }
 }
 
 }  // namespace
@@ -629,6 +707,7 @@ int main() {
     test_kalman_missing_observation_and_arguments();
     test_pairs_rules_lag_and_accounting();
     test_momentum_accounting_lag_and_grid();
+    test_momentum_ensemble();
     test_bar_fill_rules_and_accounting();
     test_stationary_bootstrap();
     test_sharpe_and_cscv();

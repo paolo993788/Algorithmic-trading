@@ -87,7 +87,11 @@ def test_portfolio_volatility_target_is_met_and_causal():
     frame = synthetic.trending_prices(n=5000, n_assets=6, seed=8)
     out = strategies.tsmom_ensemble(frame, portfolio_target_vol=0.10, portfolio_com=30.0)
     realised = out["returns"].iloc[1000:].std() * np.sqrt(252)
-    assert realised == pytest.approx(0.10, rel=0.2)  # EWMA targeting is approximate
+    # Tolerance 7% = sampling error + EWMA bias. Sampling: the relative standard error of a volatility estimated from
+    # N = 4,000 returns is sqrt((kurtosis - 1) / (4N)) = 1.2% with the sample kurtosis 3.4, and four of them are 4.9%.
+    # Bias: dividing by a noisy EWMA estimate inflates realised volatility by about sqrt(1 + Var(s2 / sigma^2)) - 1,
+    # with Var(s2 / sigma^2) = (kurtosis - 1) / (2 com + 1) = 2.4 / 61, i.e. 1.9% for com = 30 (realised: +2.1%).
+    assert realised == pytest.approx(0.10, rel=0.07)
     shocked = frame.copy()
     shocked.iloc[3000:] *= 1.3
     out2 = strategies.tsmom_ensemble(shocked, portfolio_target_vol=0.10, portfolio_com=30.0)

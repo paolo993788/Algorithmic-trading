@@ -1,9 +1,10 @@
 """CSCV / PBO and the stationary bootstrap."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from backtest_engine import metrics, reference, require_cpp
+from backtest_engine import metrics, reference, require_cpp, strategies
 
 core = require_cpp()
 
@@ -53,3 +54,26 @@ def test_bootstrap_reproducible_across_threads():
     a = core.stationary_bootstrap_sharpe(r, 5.0, 200, 9, 252.0, 1)
     b = core.stationary_bootstrap_sharpe(r, 5.0, 200, 9, 252.0, 4)
     np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf])
+def test_non_finite_returns_are_rejected(bad):
+    """A NaN gives sharpe_from_moments a NaN variance, which it scores as a zero Sharpe ratio: without the check every
+    bootstrap replicate that draws the NaN is exactly zero, and a configuration with one NaN scores zero in every CSCV
+    split that contains it."""
+    rng = np.random.default_rng(6)
+    r = np.r_[0.0005 + 0.01 * rng.standard_normal(1000), bad]
+    with pytest.raises(ValueError, match="finite"):
+        metrics.bootstrap_sharpe(r, n_boot=10)
+    with pytest.raises(ValueError, match="finite"):
+        core.stationary_bootstrap_sharpe(r, 5.0, 10, 1, 252.0, 1)          # the C++ entry point checks as well
+    assert np.isfinite(metrics.bootstrap_sharpe(r[:-1], n_boot=10)).all()
+    R = pd.DataFrame(rng.standard_normal((800, 5)) * 0.01, columns=[f"c{j}" for j in range(5)])
+    R["c2"] += 0.004                                                       # dominant in every block
+    assert strategies.probability_of_backtest_overfitting(R, S=8)["pbo"] == 0.0
+    R.iloc[100, 2] = bad
+    with pytest.raises(ValueError, match="finite.*c2"):
+        strategies.probability_of_backtest_overfitting(R, S=8)
+    with pytest.raises(ValueError, match="finite"):
+        core.cscv(R.to_numpy(), 8, 0)
+    assert strategies.probability_of_backtest_overfitting(R.replace([np.inf], np.nan).dropna(), S=8)["pbo"] == 0.0

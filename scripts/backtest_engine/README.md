@@ -10,7 +10,7 @@ A C++17 library exposed to Python with pybind11 for researching systematic strat
   - macOS: Xcode Command Line Tools (`xcode-select --install`);
   - Linux: GCC 9 or later, or Clang 10 or later.
 - Python dependencies: [`requirements.txt`](requirements.txt) (NumPy, SciPy, pandas, Matplotlib, pybind11, pytest, ipykernel).
-- Development tools: [`requirements-dev.txt`](requirements-dev.txt): ruff, nbconvert, and statsmodels and scikit-learn as reference implementations for cross-check tests, which are skipped without them.
+- Development tools: [`requirements-dev.txt`](requirements-dev.txt): ruff, nbconvert, and statsmodels and scikit-learn as reference implementations for cross-check tests, which are skipped without them (CI sets `BACKTEST_ENGINE_REQUIRE_REFERENCES=1`, which turns those skips into failures).
 - Exact versions: [`requirements-lock.txt`](requirements-lock.txt) pins the two files above to versions that pass the test suite and execute every notebook (Python 3.11, Linux). CI installs it on Python 3.11 and the unpinned files on 3.10 and 3.12.
 - For the standalone C++ tests and benchmarks: CMake 3.16 or later (Ninja optional).
 
@@ -121,13 +121,13 @@ Downloads are cached in `data/raw/fred/`, `data/raw/ecb/` and `data/raw/eia/`, w
 
 **Portfolio risk controls** (`backtest_engine/portfolio.py`): volatility targeting multiplies the return of day $t$ by $\sigma^*/\hat\sigma_{t-1}$ (optionally capped), with $\hat\sigma$ estimated on the stream itself or on the P&L of a permanently open unit position (for strategies that are often flat); drawdown control applies step multipliers when the drawdown at $t-1$, from the all-time or rolling peak of the controlled curve, exceeds given thresholds; historical VaR and ES use overlapping compounded $h$-day returns, normal VaR/ES the sample moments; the rolling one-day 99% historical VaR over 250 days is backtested with the Basel traffic light (green 0-4, yellow 5-9, red 10 or more exceptions in 250 days).
 
-**CSCV and PBO** (`cpp/overfitting.hpp`): the $T \times N$ matrix of strategy returns is cut into $S$ blocks (the oldest observations that do not fill a block are dropped); for each of the $\binom{S}{S/2}$ choices of in-sample blocks, the best in-sample Sharpe ratio is located and its out-of-sample relative rank $\bar\omega$ (ties averaged) is turned into $\lambda = \ln(\bar\omega/(1-\bar\omega))$. PBO is the share of $\lambda \le 0$ (Bailey, Borwein, Lopez de Prado and Zhu, 2017). Block statistics are precomputed and the combinations evaluated in parallel.
+**CSCV and PBO** (`cpp/overfitting.hpp`): the $T \times N$ matrix of strategy returns is cut into $S$ blocks (the oldest observations that do not fill a block are dropped); for each of the $\binom{S}{S/2}$ choices of in-sample blocks, the best in-sample Sharpe ratio is located and its out-of-sample relative rank $\bar\omega$ (ties averaged) is turned into $\lambda = \ln(\bar\omega/(1-\bar\omega))$. PBO is the share of $\lambda \le 0$ (Bailey, Borwein, Lopez de Prado and Zhu, 2017). Block statistics are precomputed and the combinations evaluated in parallel. Returns must be finite: a NaN would give its configuration a Sharpe ratio of zero in every split containing it, so non-finite values raise `ValueError` (Python) or `std::invalid_argument` (C++), as in the Sharpe-ratio bootstrap.
 
-**Stationary bootstrap** (`cpp/overfitting.hpp`): blocks with geometric lengths (mean `mean_block`) starting at uniform positions, with wrap-around (Politis and Romano, 1994); each replicate has its own random stream, so results do not depend on the number of threads.
+**Stationary bootstrap** (`cpp/overfitting.hpp`): blocks with geometric lengths (mean `mean_block`) starting at uniform positions, with wrap-around (Politis and Romano, 1994); each replicate has its own random stream, so results do not depend on the number of threads. The Sharpe-ratio bootstrap rejects non-finite returns (a replicate drawing a NaN would otherwise score exactly zero).
 
 **Statistics** (`backtest_engine/metrics.py`, `backtest_engine/cointegration.py`): probabilistic and deflated Sharpe ratios (Bailey and Lopez de Prado, 2012, 2014) with the expected maximum Sharpe ratio of $N$ trials $\sqrt{V}\,[(1-\gamma)\Phi^{-1}(1-1/N) + \gamma\Phi^{-1}(1-1/(Ne))]$; ADF test with AIC lag selection and Engle-Granger test with the critical values of MacKinnon (2010); AR(1) half-life. The 10-year Treasury total return index reprices a constant-maturity par bond daily and accrues its coupon over calendar days.
 
-**Currency factors** (`backtest_engine/fx_factors.py`): month-end ECB spot rates $S$ (euros per unit of currency) and OECD 3-month rates $i$; monthly log excess return $rx_{c,t+1} = \ln(1 + i_{c,t}/1200) - \ln(1 + i_{EUR,t}/1200) + \Delta\ln S_{c,t+1}$ (covered interest parity approximates a one-month forward). Signals known at the end of month $t$: interest differential (carry), cumulative excess return over $L$ months skipping $k$ (momentum), $\ln$ of the average spot rate around 60 months earlier minus $\ln S_t$ (value proxy, nominal). Euro-neutral portfolios, long the $n$ highest and short the $n$ lowest signals with equal or demeaned-rank weights, held over month $t+1$; costs proportional to turnover, entries included. Newey-West (Bartlett) standard errors; Fama regressions of $\Delta\ln S_{t+1}$ on $(i_{EUR} - i_c)_t$ by currency and pooled with currency intercepts (standard errors clustered by month with Newey-West lags); volatility scaling by trailing volatility and variance management by the realised variance of daily spot returns in the previous month (Moreira and Muir, 2017).
+**Currency factors** (`backtest_engine/fx_factors.py`): month-end ECB spot rates $S$ (euros per unit of currency) and OECD 3-month rates $i$; monthly log excess return $rx_{c,t+1} = \ln(1 + i_{c,t}/1200) - \ln(1 + i_{EUR,t}/1200) + \Delta\ln S_{c,t+1}$ (covered interest parity approximates a one-month forward). Signals known at the end of month $t$: interest differential (carry), cumulative excess return over $L$ months skipping $k$ (momentum), $\ln$ of the average spot rate around 60 months earlier minus $\ln S_t$ (value proxy, nominal). Euro-neutral portfolios, long the $n$ highest and short the $n$ lowest signals with equal or demeaned-rank weights, held over month $t+1$; costs proportional to turnover, entries included. A month without a signal keeps the previous positions (no turnover); a month in which a held currency has no excess return (a gap in its interest rate) is NaN rather than a zero return for that leg. Newey-West (Bartlett) standard errors; Fama regressions of $\Delta\ln S_{t+1}$ on $(i_{EUR} - i_c)_t$ by currency and pooled with currency intercepts (standard errors clustered by month with Newey-West lags); volatility scaling by trailing volatility and variance management by the realised variance of daily spot returns in the previous month (Moreira and Muir, 2017).
 
 **Futures contracts** (`backtest_engine/futures.py`; learning note [`docs/learning/futures/futures_rolls_and_carry.md`](../../docs/learning/futures/futures_rolls_and_carry.md)):
 
@@ -160,8 +160,8 @@ Downloads are cached in `data/raw/fred/`, `data/raw/ecb/` and `data/raw/eia/`, w
 - **Covariance:** sample; EWMA with a half-life; Ledoit-Wolf shrinkage towards the scaled identity (2004a, equal to scikit-learn's estimator) or the constant-correlation matrix (2004b), with the estimated optimal intensity $\delta = \max(0, \min(1, (\hat\pi - \hat\rho)/(\hat\gamma T)))$.
 - **Rules** (fully invested, long only unless stated): 1/N; inverse volatility; risk budgeting and ERC by Spinu's (2013) convex problem, solved on the correlation matrix by damped then pure Newton steps; minimum variance (closed form, or SLSQP when bounds bind); maximum diversification (minimum variance on the correlation matrix, rescaled by $1/\sigma$); mean-variance with a budget multiplier; maximum Sharpe (closed form $\Sigma^{-1}\mu$; long only, an exact reduction to non-negative least squares, $\min_{z \ge 0}\|L'z\|^2 + (s'z - 1)^2$ with $C = LL'$ and $s$ the Sharpe ratios; cash when no mean is positive); Bayes-Stein means (Jorion, 1986).
 - **Risk decomposition:** Euler contributions to volatility, $w_i(\Sigma w)_i/\sigma_p$, and to expected shortfall from scenarios, $-E[w_i r_i \mid \text{tail}]$ (Tasche, 2000); both sum exactly to the total.
-- **Walk-forward rebalancing:** decisions on the last trading day of each complete period with the last $L$ returns, execution `lag` days later, weights drifting with returns between trades, cost $\sum_i c_i|\Delta w_i|$ per trade, optional ex-ante volatility target with a leverage cap, and the break-even cost multiple against a benchmark.
-- **Universe:** daily excess returns of Treasury total-return proxies (from constant-maturity yields), two equity price indices and six currency forwards (spot plus the previous month's interbank differential), on the US business-day calendar.
+- **Walk-forward rebalancing:** decisions on the last trading day of each complete period (the final period counts only once the data reach its last business day; without a holiday calendar one missing last weekday is taken as a holiday for months and quarters, but not for weeks) with the last $L$ returns, execution `lag` days later, weights drifting with returns between trades, cost $\sum_i c_i|\Delta w_i|$ per trade, optional ex-ante volatility target with a leverage cap, and the break-even cost multiple against a benchmark.
+- **Universe:** daily excess returns of Treasury total-return proxies (from constant-maturity yields), two equity price indices and six currency forwards (spot plus the OECD interbank differential, with each monthly average used from the last day of the following month: a day of month $m$ accrues the average of month $m-2$, the month's last day that of $m-1$, a conservative publication lag), on the US business-day calendar; gaps are carried forward for at most five days.
 
 **Bar engine and platform export** (`cpp/bars.hpp`, `backtest_engine/bars.py`, `backtest_engine/ninjatrader.py`; learning note [`docs/learning/execution/bar_strategies_and_platform_export.md`](../../docs/learning/execution/bar_strategies_and_platform_export.md)):
 
@@ -176,7 +176,7 @@ Downloads are cached in `data/raw/fred/`, `data/raw/ecb/` and `data/raw/eia/`, w
 
 ## Verification
 
-Run `python -m pytest tests/backtest_engine` from the repository root (146 tests, about 30 seconds). Main checks:
+Run `python -m pytest tests/backtest_engine` from the repository root (174 tests, about 40 seconds). Main checks:
 
 | Check | Tolerance and justification |
 | --- | --- |
@@ -190,8 +190,8 @@ Run `python -m pytest tests/backtest_engine` from the repository root (146 tests
 | Constant-growth asset: leverage and return in closed form; leverage cap | relative $10^{-10}$ |
 | Momentum ensemble C++ vs Python reference, with and without the portfolio volatility target | relative $10^{-11}$ |
 | Ensemble with a single look-back and no portfolio target equals the single-horizon backtest | relative $10^{-12}$ |
-| Portfolio volatility target: realised volatility of a 6-asset synthetic portfolio | within 20% of the 10% target (EWMA targeting is approximate) |
-| Volatility targeting of a stream and of an intermittent strategy (unit-risk sizing) | within 15% and 10% of the target |
+| Portfolio volatility target: realised volatility of a 6-asset synthetic portfolio | within 7% of the 10% target: four standard errors of a volatility from 4,000 returns ($4\sqrt{(\kappa-1)/(4N)}$ = 4.9%) plus the upward bias of EWMA targeting (1.9% for a centre of mass of 30 days) |
+| Volatility targeting of a stream and of an intermittent strategy (unit-risk sizing) | within 10% (four standard errors from 1,000 returns, 8.9%, plus 0.6% EWMA bias) and 10% of the target |
 | Walk-forward Kalman: yearly estimates use only earlier years; adaptive z-score has unit dispersion | exact equality under future shocks; standard deviation within 10% of 1 |
 | Drawdown control on hand-computed paths (all-time and rolling peak); VaR/ES on a uniform grid and on normal samples; rolling VaR window; traffic-light zones; stress-window returns | exact / $10^{-12}$; 1-1.5% for normal quantiles with 400,000 draws |
 | No look-ahead: shocking future prices leaves past signals, positions and returns unchanged (Kalman, pairs, momentum, ensemble with portfolio target, walk-forward, adaptive z, volatility targeting) | exact equality |
@@ -200,15 +200,18 @@ Run `python -m pytest tests/backtest_engine` from the repository root (146 tests
 | PBO with one dominant strategy | below 0.05 |
 | Bootstrap Sharpe dispersion vs Lo (2002) i.i.d. formula | within 10% |
 | Bootstrap and CSCV reproducibility with 1 and 4 threads | bitwise equality |
+| Bootstrap and CSCV reject a NaN or infinite return (Python wrappers and C++ entry points); PBO of a dominant configuration unchanged after dropping the row | exact |
+| Vector arguments of the C++ bindings with another rank (a column, a matrix, a scalar) raise `ValueError` instead of being flattened | exact |
 | Expected maximum Sharpe of 1,000 trials vs simulation | 0.05 |
-| ADF and Engle-Granger statistics vs statsmodels (when installed) | relative $10^{-10}$ |
+| ADF and Engle-Granger statistics vs statsmodels (when installed; required in CI) | relative $10^{-10}$ |
 | Currency excess returns and cross-sectional weights on hand-computed examples (sides, ties, missing signals, rank weights) | exact |
 | Currency signals and volatility scaling: future shocks leave earlier values unchanged; momentum skips the current month; value averages the intended window | exact equality |
 | Currency portfolio timing (weights at $t$ earn month $t+1$) and cost accounting including entries | exact |
+| Currency portfolio with a held leg missing its excess return: that month NaN (not a net long or short book), other months unchanged; a month without a signal keeps the positions with no turnover | exact |
 | Newey-West with zero lags equals White standard errors; coefficients equal OLS | relative $10^{-12}$ |
 | Realised variance of daily spot returns under the previous month's weights; variance management uses the previous month | exact |
 | Fama regression on simulated data where uncovered interest parity holds | pooled slope within 0.05 of 1 |
-| MacKinnon critical values vs statsmodels (when installed) | relative $10^{-12}$ |
+| MacKinnon critical values vs statsmodels (when installed; required in CI) | relative $10^{-12}$ |
 | Futures calendar: published last trade dates (WTI May 2020: 21 April; June 2020: 19 May, moved by Memorial Day), Good Friday, Juneteenth and weekend observance rules | exact |
 | Nearby contracts and roll schedules on hand-checked dates (expiring contract kept on its last trade date; roll `days_before` business days earlier) | exact |
 | Ratio-adjusted ratios equal tradable returns; difference-adjusted changes equal price changes; for both anchors; unadjusted series differs only on roll dates | $10^{-13}$ / $10^{-11}$ |
@@ -230,15 +233,17 @@ Run `python -m pytest tests/backtest_engine` from the repository root (146 tests
 | Effective trials: 1 for identical, $m$ for $m$ groups of identical, $K$ for independent trials; expected-maximum formula within 2% of the exact value; DSR with an effective count | 1-10% |
 | Break test: simulated critical values vs Andrews (1993) (7.12, 8.68, 12.16); size; detection and dating of a planted break | 4%; below 12%; exact |
 | Purged cross-validation: no training label overlaps a test label span, embargo respected, folds partition the sample, $C(N-1,k-1)$ test appearances and $\phi$ paths | exact |
-| Ledoit-Wolf identity target vs scikit-learn; constant-correlation target vs a loop-by-loop transcription of the paper | relative $10^{-12}$ |
+| Ledoit-Wolf identity target vs scikit-learn (required in CI); constant-correlation target vs a loop-by-loop transcription of the paper | relative $10^{-12}$ |
 | Shrinkage lowers the Frobenius loss when the target suits the truth (paired over 200 samples of $T$ = 60, $N$ = 20); the intensity vanishes with $T$ = 20,000 | paired $t > 4$; below 20% of the small-sample mean |
 | Minimum variance: closed form; long-only KKT conditions on a covariance whose unconstrained solution shorts | relative $10^{-12}$; $10^{-6}$ |
 | ERC: equal risk contributions (also on a daily-scale covariance with a 0.95-correlated pair), budgets, scale invariance, ERC = inverse volatility for two assets or uncorrelated assets, $\sigma_{mv} \le \sigma_{ERC} \le \sigma_{1/N}$ | relative $10^{-9}$-$10^{-10}$ |
 | Maximum Sharpe: closed form and scale invariance; long-only KKT; not beaten by 50,000 random long-only portfolios; weight caps; cash without a positive mean | $10^{-12}$; $10^{-6}$; $10^{-9}$ |
 | Maximum diversification beats 1/N, inverse volatility, ERC and minimum variance on the diversification ratio; mean-variance with infinite risk aversion is minimum variance; Bayes-Stein intensity limits | $10^{-10}$; $10^{-8}$; exact |
 | Euler contributions sum to the total; Gaussian ES at 97.5% equals $2.338\sigma_p$ and its shares equal the volatility shares (40,000 scenarios) | relative $10^{-12}$; 3% |
-| Walk-forward rebalancing: decision on the window ending at the decision date, trade at $d$ + lag, first return the day after, incomplete last month dropped; drift, turnover and per-asset costs; identical assets trade once; exact ex-ante volatility target and leverage cap; break-even multiple | exact; $10^{-12}$; $10^{-10}$ |
+| Walk-forward rebalancing: decision on the window ending at the decision date, trade at $d$ + lag, first return the day after, incomplete last month dropped; complete periods for months (Memorial Day on 31 May 2021), quarters (Good Friday on 29 March 2024) and weeks (a sample ending on a Wednesday, Good Friday with and without a holiday calendar, a Thursday before a Friday holiday); drift, turnover and per-asset costs; identical assets trade once; exact ex-ante volatility target and leverage cap; break-even multiple | exact; $10^{-12}$; $10^{-10}$ |
 | No look-ahead in rebalancing: shocking returns after a date leaves earlier targets and daily results unchanged (also on the real data in the notebook) | exact equality |
+| Multi-asset universe on FRED series served from local files: the euro rate of month $m-2$ accrues on the days of month $m$ ($m-1$ on its last day), every day; Japanese call-money fallback; T-bill accrued from the previous day's rate over calendar days; per-dollar quotes inverted (JPY, CHF, Nikkei in USD); Treasury leg equals the total-return index; rows on the H.15 calendar; gaps carried forward five days, longer ones dropped | absolute $10^{-15}$ |
+| Loaders on `file://` fixtures: FRED cache hit, refresh and slicing across series; ECB archive member, columns and empty rows; momentum universe columns, negative WTI print masked, five-day carry-forward, Treasury index; WTI-Brent pair on common days | exact |
 | Bar engine C++ vs Python reference on random order plans mixing every order type, bracket, offset, exit flag and session close, with and without fill on touch (P&L, positions, trades, MAE/MFE, fills) | $10^{-12}$; every exit reason occurs |
 | Fill rules on hand-built bars: market fills at the next open with slippage; stop at its price or at a gapped open, unfilled when not reached; limit needs a trade through unless on touch; the open decides whether the stop or the target of the same bar fills; a target at the high fills only on touch; a held stop gapped at the open; offset stop on the entry bar, tighter stop afterwards; session close at the last bar's close, also on the last bar of the data; reversal at one fill; second entry in the same direction ignored; a stop or target beyond the market when attached fills at once (limit and stop entries, both sides); at equal prices a stop fills before a limit and an exit before an entry; the adverse excursion includes the slippage at the open; non-positive stop offsets rejected | exact |
 | Per-bar P&L identity: sum of trade P&L equals sum of bar P&L; commissions equal twice the contracts traded; MAE/MFE never below the realised loss/gain; parallel grid equals single runs and is thread invariant; argument validation | $10^{-6}$ currency; exact |
@@ -251,7 +256,7 @@ Run `python -m pytest tests/backtest_engine` from the repository root (146 tests
 
 ## C++ unit tests, sanitizers and benchmarks
 
-**Tests.** The engines are header-only, so [`cpp/CMakeLists.txt`](cpp/CMakeLists.txt) also compiles them without Python. It uses `-Wall -Wextra -Wpedantic -Wshadow -Wold-style-cast -Wnull-dereference -Wdouble-promotion -Werror` (`/W4 /WX` with MSVC) and bounds-checked standard containers outside Release builds. [`cpp/tests/test_core.cpp`](cpp/tests/test_core.cpp) runs 10,801 checks without any test framework:
+**Tests.** The engines are header-only, so [`cpp/CMakeLists.txt`](cpp/CMakeLists.txt) also compiles them without Python. It uses `-Wall -Wextra -Wpedantic -Wshadow -Wold-style-cast -Wnull-dereference -Wdouble-promotion -Werror` (`/W4 /WX` with MSVC) and bounds-checked standard containers outside Release builds. [`cpp/tests/test_core.cpp`](cpp/tests/test_core.cpp) runs 13,609 checks without any test framework:
 
 | Check | Tolerance |
 | --- | --- |
@@ -262,8 +267,9 @@ Run `python -m pytest tests/backtest_engine` from the repository root (146 tests
 | Kalman filter without state noise equals ordinary least squares; missing observations; argument validation | $10^{-6}$; exact |
 | Pairs trading rules (entry, exit, stop-loss, block until \|z\| < entry), execution lag and P&L accounting with costs | exact; $10^{-12}$ |
 | Momentum: return = held weights x returns - cost x turnover, gross exposure within the leverage cap, lag shifts weights only, grid = single backtests | $10^{-12}$; exact |
-| Stationary bootstrap: identical for 1 and 4 threads, replicate means = means of the index stream, block-start rate $1/L$, $L = 1$ i.i.d., huge $L$ circular | exact; 4 standard errors |
-| CSCV: number of combinations, PBO 0 for a dominant strategy, thread invariance, argument validation | exact |
+| Momentum ensemble (late-starting asset, mid-sample gap): one look-back without a portfolio target equals the single-horizon backtest; with the target, return = held weights x returns - cost x turnover, gross exposure within leverage cap x scale cap, one common scale factor per day, no look-ahead under a price shock; argument validation | bitwise; $10^{-12}$; exact |
+| Stationary bootstrap: identical for 1 and 4 threads, replicate means = means of the index stream, block-start rate $1/L$, $L = 1$ i.i.d., huge $L$ circular; a NaN or infinite return rejected | exact; 4 standard errors |
+| CSCV: number of combinations, PBO 0 for a dominant strategy, thread invariance, argument validation, a NaN or infinite return rejected | exact |
 | Bar engine: market, stop and limit fills with slippage and gaps, intrabar path (stop or target first), fill on touch, session close, side-specific market exits, trade and bar P&L identity and commissions on 2,000 random bars, parallel grid equal to single runs and thread invariant, argument validation | exact; $10^{-6}$ |
 
 **Mutation check.** Five deliberate bugs were injected, one per engine, and each makes the suite fail:
@@ -294,6 +300,9 @@ CI runs both, plus GCC and Clang builds with warnings as errors.
 | `cscv` | 3,000 x 104, 16 blocks (12,870 combinations) | 35 ms | 12 ms | 2.8 |
 | `bar_backtest` | 196,000 five-minute bars, breakout plan | 10.5 ms | | |
 | `bar_backtest_many` | 196,000 bars x 64 plans | 813 ms | 226 ms | 3.6 |
+| `tsmom_ensemble_backtest`\* | 6,700 days x 8 assets, 4 look-backs, portfolio volatility target | 1.5 ms | | |
+
+\* Added in October 2026 and measured on a 2.1 GHz Xeon shared with other jobs, so not strictly comparable with the rows above; in the same run `tsmom_grid` took 77 ms on one thread, about 0.7 ms per single-horizon backtest.
 
 Reading the table:
 
@@ -308,7 +317,7 @@ Reading the table:
 
 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) runs on every pull request and on pushes to `main`. It needs no credentials and downloads no market data. Its jobs:
 
-1. **Python:** lint (ruff, pyflakes rules) and the test suite, on Python 3.11 with the locked versions and on 3.10 and 3.12 with the newest allowed versions.
+1. **Python:** lint (ruff, pyflakes rules) and the test suite, on Python 3.11 with the locked versions and on 3.10 and 3.12 with the newest allowed versions. `BACKTEST_ENGINE_REQUIRE_REFERENCES=1` makes the statsmodels and scikit-learn cross-checks fail rather than skip if their package is missing.
 2. **C++:** the standalone tests with GCC and Clang (warnings as errors), and with GCC under ASan/UBSan and under TSan.
 3. **Notebooks:** every Python notebook executed offline on synthetic data. The job checks that the data cache stays empty, i.e. that synthetic mode does not touch the network.
 

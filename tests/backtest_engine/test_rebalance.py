@@ -93,3 +93,34 @@ def test_volatility_target_and_break_even():
     assert rb.break_even_multiplier(s, b) == pytest.approx(2.0)          # advantage 0.001 vs extra costs 0.0005
     assert rb.break_even_multiplier(s) == pytest.approx(2.0)
     assert np.isnan(rb.break_even_multiplier(b, s))
+
+
+def dates(index, frequency, **kwargs):
+    return [d.strftime("%Y-%m-%d") for d in rb.rebalance_dates(index, frequency, **kwargs)]
+
+
+def test_rebalance_dates_keep_only_complete_periods():
+    # Months: the last trading day of each month; a final month counts once the data reach its last weekday, or the
+    # weekday before when that one is missing (a holiday: Memorial Day, Monday 31 May 2021).
+    days = pd.bdate_range("2021-03-01", "2021-05-31")
+    assert dates(days, "ME") == ["2021-03-31", "2021-04-30", "2021-05-31"]
+    assert dates(days[days < "2021-05-29"], "ME") == ["2021-03-31", "2021-04-30", "2021-05-28"]   # ends Fri 28 May
+    assert dates(days[days < "2021-05-28"], "ME") == ["2021-03-31", "2021-04-30"]                 # ends Thu 27 May
+    assert dates(days[days < "2021-05-28"], "ME", holidays=["2021-05-28", "2021-05-31"])[-1] == "2021-05-27"
+    # Quarters: quarter-end trading days; Good Friday, 29 March 2024, is the last weekday of the first quarter.
+    days = pd.bdate_range("2023-10-02", "2024-03-29").drop(pd.Timestamp("2024-03-29"))
+    assert dates(days, "QE") == ["2023-12-29", "2024-03-28"]
+    assert dates(days[days < "2024-03-28"], "QE") == ["2023-12-29"]                                # ends Wed 27 March
+    assert dates(days[days < "2024-03-28"], "QE", holidays=["2024-03-28", "2024-03-29"]) == ["2023-12-29", "2024-03-27"]
+    # Weeks: a sample ending mid-week (Wednesday 20 January 2021) yields only complete weeks; a week whose Friday is
+    # a holiday ends on the Thursday inside the sample, and at the end of the sample only with the holiday calendar.
+    days = pd.bdate_range("2021-01-04", "2021-01-20")
+    assert dates(days, "W-FRI") == ["2021-01-08", "2021-01-15"]
+    assert dates(days[days <= "2021-01-15"], "W-FRI") == ["2021-01-08", "2021-01-15"]
+    days = pd.bdate_range("2024-03-18", "2024-04-05").drop(pd.Timestamp("2024-03-29"))           # Good Friday
+    assert dates(days, "W-FRI") == ["2024-03-22", "2024-03-28", "2024-04-05"]
+    assert dates(days[days <= "2024-03-28"], "W-FRI") == ["2024-03-22"]
+    assert dates(days[days <= "2024-03-28"], "W-FRI", holidays=["2024-03-29"]) == ["2024-03-22", "2024-03-28"]
+    # Holidays only matter for the final period; a week ending on a Thursday holiday (4 July 2025 is a Friday).
+    days = pd.bdate_range("2025-06-30", "2025-07-11").drop(pd.Timestamp("2025-07-04"))
+    assert dates(days, "W-FRI") == ["2025-07-03", "2025-07-11"]

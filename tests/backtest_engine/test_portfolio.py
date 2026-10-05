@@ -12,8 +12,11 @@ def test_volatility_targeting_meets_target_and_uses_past_data():
     rng = np.random.default_rng(3)
     pnl = pd.Series(rng.standard_normal(3000) * np.r_[np.ones(1500), 3 * np.ones(1500)])
     scaled = pf.volatility_targeted(pnl, target=0.10)
-    # A threefold volatility jump is absorbed within a few half-lives; sampling error of the EWMA is ~5%.
-    assert scaled.iloc[2000:].std() * np.sqrt(252) == pytest.approx(0.10, rel=0.15)
+    # A threefold volatility jump is absorbed within a few half-lives (500 days after it the pre-jump data weigh
+    # 2^(-500/60) = 0.3% in the EWMA). Tolerance 10% = four standard errors of a volatility estimated from N = 1,000
+    # normal returns, 4 sqrt(2 / (4N)) = 8.9%, plus the upward bias of dividing by a noisy EWMA estimate,
+    # sqrt(1 + 2 (1 - lambda) / (1 + lambda)) - 1 = 0.6% for a 60-day half-life (realised: +0.8%).
+    assert scaled.iloc[2000:].std() * np.sqrt(252) == pytest.approx(0.10, rel=0.10)
     pnl2 = pnl.copy()
     pnl2.iloc[2500:] *= 10
     pd.testing.assert_series_equal(scaled.iloc[:2501], pf.volatility_targeted(pnl2, target=0.10).iloc[:2501] / np.r_[np.ones(2500), 10])

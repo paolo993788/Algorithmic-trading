@@ -320,7 +320,7 @@ $k^*$ is a first-order statement about means. The Sharpe ratio also depends on t
 | Bayes-Stein means | `allocation.bayes_stein_means(x, cov)` | returns `(means, phi)` |
 | Euler contributions | `allocation.risk_contributions`, `expected_shortfall_contributions` | exact sums |
 | Diversification ratio | `allocation.diversification_ratio` | |
-| Rebalancing calendar | `rebalance.rebalance_dates(index, frequency)` | last trading day of each complete period |
+| Rebalancing calendar | `rebalance.rebalance_dates(index, frequency, holidays=None)` | last trading day of each complete period; the final period counts once the data reach its last business day |
 | Walk-forward backtest | `rebalance.walk_forward_allocation(...)` | lag, drift, per-asset costs, volatility target and cap |
 | Break-even costs | `rebalance.break_even_multiplier` | |
 | Universe | `universes.load_multi_asset_excess_returns`, `synthetic_multi_asset` | FRED sources; synthetic for offline runs |

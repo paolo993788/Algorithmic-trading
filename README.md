@@ -90,26 +90,30 @@ Each notebook states its rules, signal timing, costs and data sources, fixes its
 
 ## Architecture
 
-```text
-notebooks/  ──►  backtest_engine (Python)                  ──►  backtest_engine._core (C++17, pybind11)
-                 data loaders (FRED, ECB)                        Kalman filter, maximum-likelihood objective
-                 cointegration tests (ADF, Engle-Granger)        pairs backtest and parallel parameter grids
-                 walk-forward Kalman, adaptive z-score           momentum: single horizon, ensemble, portfolio vol target
-                 portfolio: vol targeting, drawdown control,     CSCV / probability of backtest overfitting
-                 VaR/ES, Basel traffic light, stress tests       stationary bootstrap (thread-independent streams)
-                 metrics: PSR, deflated Sharpe ratio
-                 currency factors: carry, momentum, value, UIP
-                 futures: calendars, rolls, adjusted series, carry, P&L
-                 validation: Reality Check, SPA, Romano-Wolf, break test, purged CV   joint stationary bootstrap of many series
-                 portfolio construction: Ledoit-Wolf covariance, risk budgeting,
-                   min-var, max diversification, max Sharpe (NNLS), Euler risk,
-                   walk-forward rebalancing with drift, lag, costs, vol target
-                 Schwartz-Smith model (validation laboratory)
-                 bars: order plans, NinjaTrader-exact indicators,    bar engine: intrabar fills along the platform's path,
-                   Donchian, RSI(2), opening range, turn of month      brackets, sessions, contracts, costs; parallel grids
-                 ninjatrader: data files, trade lists, reconciliation,
-                   NinjaScript generation  ──►  scripts/ninjatrader_strategies/*.cs  ──►  NinjaTrader 8
+Research notebooks call the Python package. Computationally intensive methods are implemented in C++17 and exposed through pybind11.
+
+```mermaid
+flowchart TD
+    N[Research notebooks] --> P[Python package]
+    P --> C[C++17 numerical core]
+    P --> R[Research outputs]
+    T[Tests] -.-> P
+    T -.-> C
+    P --> E[NinjaTrader export]
 ```
+
+| Component | Source | Responsibility |
+| --- | --- | --- |
+| Data and instruments | [`data.py`](scripts/backtest_engine/backtest_engine/data.py), [`futures.py`](scripts/backtest_engine/backtest_engine/futures.py), [`universes.py`](scripts/backtest_engine/backtest_engine/universes.py) | Market data, futures rolls and investment universes. |
+| Strategies and execution | [`strategies.py`](scripts/backtest_engine/backtest_engine/strategies.py), [`bars.py`](scripts/backtest_engine/backtest_engine/bars.py), [`cointegration.py`](scripts/backtest_engine/backtest_engine/cointegration.py), [`fx_factors.py`](scripts/backtest_engine/backtest_engine/fx_factors.py) | Signals, statistical arbitrage, bar-based execution and currency factors. |
+| Portfolio construction | [`allocation.py`](scripts/backtest_engine/backtest_engine/allocation.py), [`covariance.py`](scripts/backtest_engine/backtest_engine/covariance.py), [`portfolio.py`](scripts/backtest_engine/backtest_engine/portfolio.py), [`rebalance.py`](scripts/backtest_engine/backtest_engine/rebalance.py) | Allocation, covariance estimation, risk budgets and rebalancing. |
+| Validation | [`validation.py`](scripts/backtest_engine/backtest_engine/validation.py), [`cross_validation.py`](scripts/backtest_engine/backtest_engine/cross_validation.py), [`metrics.py`](scripts/backtest_engine/backtest_engine/metrics.py), [`reference.py`](scripts/backtest_engine/backtest_engine/reference.py) | Out-of-sample tests, multiple-testing adjustments and performance measures. |
+| Platform integration | [`ninjatrader.py`](scripts/backtest_engine/backtest_engine/ninjatrader.py) | NinjaScript export and trade reconciliation. |
+| Numerical core | [C++ source](scripts/backtest_engine/cpp/) | Numerical kernels and native bindings. |
+| Visualisation | [`figstyle.py`](scripts/backtest_engine/backtest_engine/figstyle.py), [`readme_figures.py`](scripts/backtest_engine/backtest_engine/readme_figures.py) | Figure styling and reproducible research outputs. |
+| Validation suite | [Python tests](tests/backtest_engine/), [C++ tests](scripts/backtest_engine/cpp/tests/) | Numerical and implementation checks. |
+
+Implementation and installation details: [package documentation](scripts/backtest_engine/README.md).
 
 ## Getting started
 

@@ -95,7 +95,7 @@ def fund_growth(t, d):
     ax.axhline(1, color=t["axis"], lw=1)
     ax.legend(loc="upper left", ncol=3)
     ax.yaxis.set_major_formatter(lambda v, _: f"{v:.1f}")
-    header(fig, t, "Two uncorrelated sleeves, one modest fund",
+    header(fig, t, "Performance of the two-strategy portfolio",
            f"Growth of 1 invested in {d['fund'].index[0]:%Y}, after trading costs; fund with volatility cap and drawdown control",
            d["source"] + "; case study notebook")
     return fig
@@ -127,7 +127,7 @@ def overfitting(t, d):
     ax.axhline(0, color=t["axis"], lw=1)
     ax.axvline(0, color=t["axis"], lw=1)
     ax.set(xlim=(lo, hi), ylim=(lo, hi), xlabel="Sharpe ratio 1999-2012 (in sample)", ylabel="Sharpe ratio 2013-2025 (out of sample)")
-    header(fig, t, "The best backtest is not the best strategy",
+    header(fig, t, "In-sample and out-of-sample strategy performance",
            "Time-series momentum: Sharpe ratios of every look-back and volatility window tried, after costs", d["source"])
     fig.texts[-1].set_y(0.015)
     return fig
@@ -164,7 +164,7 @@ def vol_target(t, d):
                 color=t["ink2"], annotation_clip=False)
     percent_axis(ax)
     ax.legend(loc="upper left", ncol=2)
-    header(fig, t, "A portfolio volatility target keeps risk stable, except for jumps",
+    header(fig, t, "Realised volatility under portfolio volatility targeting",
            "Momentum ensemble (1, 3, 6 and 12 months), rolling six-month volatility, annualised", d["source"])
     return fig
 

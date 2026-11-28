@@ -1,17 +1,8 @@
 # Algorithmic Trading
 
 [![CI](https://github.com/paolo993788/Algorithmic-trading/actions/workflows/ci.yml/badge.svg)](https://github.com/paolo993788/Algorithmic-trading/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
-![C++](https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white)
-![R](https://img.shields.io/badge/R-4.2%2B-276DC3?logo=r&logoColor=white)
-![pybind11](https://img.shields.io/badge/bindings-pybind11-5C6BC0)
-![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)
-![Data](https://img.shields.io/badge/data-ECB%20%7C%20EIA%20%7C%20FRED%20%7C%20OECD-2E7D32)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
-**Systematic strategy research with a C++17 backtesting engine driven from Python notebooks: no look-ahead, explicit costs and execution lags, walk-forward estimation, overfitting diagnostics and an investment-committee style go/no-go decision, on official ECB, EIA and FRED data; and a bar engine with NinjaTrader's execution model that turns a validated rule into a NinjaScript strategy whose platform trades reconcile with the backtest.**
-
-Most backtests look good because of what they leave out: the configurations that were tried and discarded, the costs, the one-day delay between signal and trade, the single episode that made all the money. This repository puts those elements at the centre. The C++ engine runs parameter grids, combinatorially symmetric cross-validation and bootstraps in parallel; the notebooks use them to answer the questions a portfolio manager, a risk function or an allocator would ask before putting capital behind a strategy.
+This project evaluates systematic trading rules and portfolio allocations using historical market data. The analysis tests how transaction costs, execution lags, re-estimation and multiple comparisons affect the results. A C++17 engine runs the backtests and statistical tests, and Python notebooks document the research. The bar engine also supports NinjaTrader 8 order-fill conventions and trade-list reconciliation.
 
 ## Highlights
 
@@ -27,11 +18,13 @@ Results on official data (ECB euro reference rates, EIA spot prices, Federal Res
 | Strategy validation | White's Reality Check, Hansen's SPA test and the Romano-Wolf stepdown on a joint stationary bootstrap (C++), effective number of trials for the deflated Sharpe ratio, Andrews break test, dependence on single episodes; applied to all 228 configurations of the three grids | No configuration survives: SPA p-values 0.20-0.63 and no Romano-Wolf discovery in any grid, in or out of sample; no momentum configuration beats the 12-month rule fixed in advance; each grid is worth only 5-9 independent trials; the baselines' Sharpe ratios vanish once 5-20 of their best days (5-10 months for carry) are removed |
 | Portfolio construction | Eight allocation rules (1/N, inverse volatility, risk parity, minimum variance, maximum diversification, maximum Sharpe with sample or Bayes-Stein means; sample or Ledoit-Wolf covariance) on 11 futures-like assets (Treasuries, equities, currencies), walk-forward with lag, drift and costs at 10% ex-ante volatility; Euler risk and expected-shortfall decomposition, crisis windows, 96-configuration grid tested against 1/N | No rule is shown to beat 1/N: the best (maximum diversification, Sharpe 0.43 against 0.25) has an SPA p-value of 0.06, and 0.15 over all 96 configurations; minimum variance puts 95-96% of its risk in levered Treasuries and lost 45% in 2022; 1/N is 55% currency risk; costs (1-8.5 bp a year) do not decide the ranking |
 | Bar strategies and platform deployment | Bar engine (C++) with NinjaTrader 8's historical fill model (stop, limit and market orders filled inside the bar along the platform's assumed path, brackets, sessions, contracts, commissions, slippage); Donchian breakout, RSI(2), opening range breakout and turn-of-the-month rules with NinjaTrader-exact indicators; grids, PBO, deflated Sharpe ratio, SPA and Romano-Wolf; NinjaScript code generation and trade-list reconciliation | On the Nasdaq Composite since 1971 the turn-of-the-month rule (in the market 18% of the days) earned a Sharpe ratio of 0.90 through 2000 and 0.20 since (bootstrap interval -0.19 to 0.57), and none of 20 calendar windows survives the Romano-Wolf correction after 2000; the RSI(2) rule lost money before 2001 and earned a Sharpe ratio of 0.57 since; on a martingale, filling stop orders at the stop price gives the opening range breakout a spurious Sharpe ratio of about 1.2 that two ticks of slippage remove: **the fill convention is part of the strategy** |
-| Engineering | pybind11 extension, parallel grids, CSCV and joint bootstraps with thread-independent random streams, Python reference implementations | 141 Python tests with pytest, including explicit no-look-ahead checks for every signal, risk control, roll schedule and order plan, and size and power checks of every statistical test by simulation; 10,683 C++ checks built with warnings as errors and run under AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer; measured benchmarks; CI on every pull request, including an offline run of every notebook; pinned lock file and recorded data vintages |
+| Engineering | pybind11 extension, parallel grids, CSCV and joint bootstraps with thread-independent random streams, Python reference implementations | Python tests with pytest, including explicit no-look-ahead checks for every signal, risk control, roll schedule and order plan, and size and power checks of every statistical test by simulation; 10,683 C++ checks built with warnings as errors and run under AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer; measured benchmarks; CI on every pull request, including an offline run of every Python notebook; pinned lock file and recorded data vintages |
 
-These are honest negative-to-modest results: spot prices ignore carry and roll yield, the momentum universe is small and energy-heavy, and a Sharpe ratio of 0.5 needs about 15 years of data to be statistically significant. The value of the repository is the process that reaches those conclusions.
+Energy spot proxies omit futures carry and roll yield. The momentum results cover a small, energy-heavy universe. Reported Sharpe ratios are sample estimates and their uncertainty depends on the return process, the sample length and the number of configurations tested.
 
 ## Charts
+
+The figures report historical backtests under the execution and cost assumptions in the linked notebooks. Energy spot prices are research proxies for futures, and index returns omit several costs of live execution. The highlights above summarise the stored notebook results. In the figure rerun, the in-sample Sharpe ratio is 0.34 for the winning momentum rule and 0.66 for currency carry through 2012.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/figures/fund_growth-dark.png">
@@ -40,7 +33,7 @@ These are honest negative-to-modest results: spot prices ignore carry and roll y
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/figures/momentum_overfitting-dark.png">
-  <img alt="Scatter of in-sample (1999-2012) against out-of-sample (2013-2025) Sharpe ratios for 104 momentum configurations: the in-sample winner (look-back 230 days) falls from 0.35 to 0.16, while the 12-month rule fixed a priori goes from 0.25 to 0.30." src="docs/figures/momentum_overfitting-light.png">
+  <img alt="Scatter of in-sample (1999–2012) and out-of-sample (2013–2025) Sharpe ratios for 104 momentum configurations. The in-sample winner uses a 230-day look-back and falls from 0.34 to 0.16. The pre-specified 12-month rule has a rounded Sharpe ratio of 0.30 in both periods." src="docs/figures/momentum_overfitting-light.png">
 </picture>
 
 <picture>
@@ -50,7 +43,7 @@ These are honest negative-to-modest results: spot prices ignore carry and roll y
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/figures/volatility_target-dark.png">
-  <img alt="Rolling six-month volatility of the momentum ensemble with and without a 10% portfolio volatility target: the target keeps volatility mostly between 8% and 12%, except after the Henry Hub price jump of January 2024." src="docs/figures/volatility_target-light.png">
+  <img alt="Rolling six-month annualised volatility of the momentum ensemble with and without a 10% portfolio target. Volatility targeting dampens most spikes, but realised volatility exceeds 25% after the January 2024 Henry Hub shock." src="docs/figures/volatility_target-light.png">
 </picture>
 
 <picture>
@@ -65,10 +58,12 @@ These are honest negative-to-modest results: spot prices ignore carry and roll y
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/figures/fx_styles-dark.png">
-  <img alt="Growth of 1 in euro-neutral G10 currency style portfolios from 1999 to 2025, after costs: carry reaches 2.44 with a Sharpe ratio of 0.69 before 2013 and 0.12 after, falling sharply in late 2008; momentum ends at 0.88 (0.05 and -0.21); the 5-year reversal value proxy ends at 1.11 (0.10 and 0.04)." src="docs/figures/fx_styles-light.png">
+  <img alt="Growth of 1 in euro-neutral G10 currency style portfolios after costs, 1999–2025. Carry ends at 2.38 and its Sharpe ratio falls from 0.66 through 2012 to 0.12 from 2013. Momentum ends at 0.88 and the five-year reversal value proxy ends at 1.11." src="docs/figures/fx_styles-light.png">
 </picture>
 
-The charts are drawn by `python -m backtest_engine.readme_figures` with the same rules, data and engines as the notebooks (light and dark variants in `docs/figures/`).
+The command `python -m backtest_engine.readme_figures` uses the research engine and saves light and dark PNGs in `docs/figures/`. The [source-data manifest](docs/figures/source-sha256.txt) records the inputs used for these figures.
+
+[Figure generation and provenance](docs/figure-style.md#reproducing-the-figures)
 
 ## Catalogue
 
@@ -161,7 +156,7 @@ Rebuild the momentum and pairs studies on tradable futures returns with the new 
 
 ## Development workflow
 
-Changes follow the [publishing workflow](docs/publishing.md). Every pull request runs the [CI workflow](.github/workflows/ci.yml): lint, the Python tests on Python 3.10-3.12, the C++ tests with GCC and Clang and under sanitizers, and every notebook offline on synthetic data. The [`CLAUDE.md`](CLAUDE.md) file provides project instructions for [Claude Code](https://claude.com/claude-code), so that AI-assisted contributions meet the same standards.
+Changes follow the [publishing workflow](docs/publishing.md). Every pull request runs the [CI workflow](.github/workflows/ci.yml): lint, the Python tests on Python 3.10-3.12, the C++ tests with GCC and Clang and under sanitizers, and every Python notebook offline on synthetic data. The [`CLAUDE.md`](CLAUDE.md) file provides project instructions for [Claude Code](https://claude.com/claude-code), so that AI-assisted contributions meet the same standards.
 
 ## Disclaimer
 

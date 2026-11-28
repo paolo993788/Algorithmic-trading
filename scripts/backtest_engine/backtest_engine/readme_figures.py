@@ -146,7 +146,7 @@ def pairs_variants(t, d):
         end_label(ax, t, p.index[-1], ends[name], f"{ends[name]:+.0f} USD", t["series"][k], dy=dy)
     ax.axhline(0, color=t["axis"], lw=1)
     ax.yaxis.set_major_formatter(lambda v, _: f"{v:+.0f}" if v else "0")
-    ax.legend(loc="lower right", ncol=1)
+    ax.legend(loc="upper left", ncol=1)
     header(fig, t, "The frozen model made its money in April 2020, the adaptive ones over time",
            "WTI-Brent pairs, cumulative out-of-sample P&L from 2010 in USD per barrel, entry |z| > 2, exit |z| < 0.5, after costs",
            d["source"])
@@ -160,7 +160,7 @@ def vol_target(t, d):
     for k, name in enumerate(vol.columns):
         ax.plot(vol.index, vol[name], color=t["series"][k], lw=1.4, label=name)
     ax.axhline(10, color=t["axis"], lw=1)
-    ax.annotate("10% target", (vol.index[-1], 10), xytext=(8, 0), textcoords="offset points", va="center", fontsize=9,
+    ax.annotate("10% target", (vol.index[-1], 10), xytext=(8, 4), textcoords="offset points", va="bottom", fontsize=9,
                 color=t["ink2"], annotation_clip=False)
     percent_axis(ax)
     ax.legend(loc="upper left", ncol=2)

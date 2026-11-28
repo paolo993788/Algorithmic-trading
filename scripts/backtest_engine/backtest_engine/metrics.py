@@ -38,12 +38,16 @@ def max_drawdown(cumulative):
 
 
 def performance_summary(returns: pd.Series, periods_per_year=252.0, additive=False) -> dict:
-    """Annualised statistics of a return (or, with additive=True, P&L) series."""
+    """Annualised statistics of returns or additive P&L, including drawdown from the initial value."""
     r = returns.dropna().to_numpy(dtype=float)
     mean, sd = r.mean() * periods_per_year, r.std(ddof=1) * math.sqrt(periods_per_year)
     downside = np.sqrt(np.mean(np.minimum(r, 0.0) ** 2)) * math.sqrt(periods_per_year)
-    curve = np.cumsum(r) if additive else np.cumprod(1.0 + r)
-    mdd = max_drawdown(curve) if additive else float(np.max(1.0 - curve / np.maximum.accumulate(curve)))
+    if additive:
+        curve = np.concatenate(([0.0], np.cumsum(r)))
+        mdd = max_drawdown(curve)
+    else:
+        curve = np.concatenate(([1.0], np.cumprod(1.0 + r)))
+        mdd = float(np.max(1.0 - curve / np.maximum.accumulate(curve)))
     return {
         "annual mean": mean,
         "annual volatility": sd,

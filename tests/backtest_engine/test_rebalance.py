@@ -93,3 +93,16 @@ def test_volatility_target_and_break_even():
     assert rb.break_even_multiplier(s, b) == pytest.approx(2.0)          # advantage 0.001 vs extra costs 0.0005
     assert rb.break_even_multiplier(s) == pytest.approx(2.0)
     assert np.isnan(rb.break_even_multiplier(b, s))
+
+
+def test_volatility_target_with_one_asset():
+    r = returns(k=1, seed=3)
+    lookback = 120
+    target_vol = 0.10
+    out = rb.walk_forward_allocation(r, lambda window, current: np.array([1.0]), lookback=lookback,
+                                     target_vol=target_vol, max_leverage=10.0)
+    assert not out["targets"].empty
+    for date, target in out["targets"].iterrows():
+        window = r.loc[:date, "a"].iloc[-lookback:]
+        annual_vol = window.std() * np.sqrt(252)
+        assert target["a"] * annual_vol == pytest.approx(target_vol, rel=1e-10)

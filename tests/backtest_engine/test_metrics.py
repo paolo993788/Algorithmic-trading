@@ -38,3 +38,12 @@ def test_performance_summary_constant_returns():
     assert s["observations"] == 200
     assert s["hit rate"] == pytest.approx(0.75)
     assert s["max drawdown"] > 0
+
+
+@pytest.mark.parametrize(("returns", "additive", "expected"), [
+    ([-0.20, 0.10], False, 0.20),
+    ([-2.0, 1.0], True, 2.0),
+])
+def test_performance_summary_counts_drawdown_from_initial_capital(returns, additive, expected):
+    result = metrics.performance_summary(pd.Series(returns), additive=additive)
+    assert result["max drawdown"] == pytest.approx(expected)

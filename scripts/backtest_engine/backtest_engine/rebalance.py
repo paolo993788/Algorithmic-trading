@@ -75,7 +75,8 @@ def walk_forward_allocation(returns: pd.DataFrame, allocator: Callable[[np.ndarr
             if target.shape != (n,) or not np.isfinite(target).all():
                 raise ValueError("allocator must return one finite weight per asset")
             if target_vol is not None:
-                vol = np.sqrt(target @ np.cov(window, rowvar=False) @ target * periods_per_year)
+                covariance = np.atleast_2d(np.cov(window, rowvar=False))
+                vol = np.sqrt(target @ covariance @ target * periods_per_year)
                 target = target * min(target_vol / vol, max_leverage) if vol > 0 else target
             targets[decision_pos[t]] = target
             if t + lag < n_obs:
